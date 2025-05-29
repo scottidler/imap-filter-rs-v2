@@ -3,42 +3,38 @@
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 use serde_yaml::Value;
+use globset::Glob;
 
 use crate::cfg::label::Label;
+use crate::message::{EmailAddress, Message};
 
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Deserialize)]
 pub struct AddressFilter {
     pub patterns: Vec<String>,
 }
 
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Deserialize)]
 pub struct SubjectFilter {
     pub patterns: Vec<String>,
 }
 
-#[derive(Debug, PartialEq, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Deserialize)]
 pub enum FilterAction {
     Star,
     Flag,
     Move(String),
 }
 
-/// A little helper to deserialize the `labels:` section of your YAML.
-///
-/// - If absent entirely → both Vecs empty.
-/// - If only `included` present → `labels_included` populated.
-/// - If only `excluded` present → `labels_excluded` populated.
-/// - If both present → both populated.
-#[derive(Debug, Default, Deserialize)]
+/// Helper to deserialize the `labels:` section of your YAML.
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default)]
 pub struct LabelsFilter {
     pub included: Vec<Label>,
     pub excluded: Vec<Label>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct MessageFilter {
-    // the map-key
     #[serde(skip_deserializing)]
     pub name: String,
 
@@ -54,19 +50,100 @@ pub struct MessageFilter {
     #[serde(default)]
     pub subject: Vec<String>,
 
-    // allow `label: "Foo"` or `labels: ["A","B"]` or the full map of included/excluded
     #[serde(default)]
     #[serde(alias = "label")]
     #[serde(deserialize_with = "deserialize_labels_filter")]
     pub labels: LabelsFilter,
 
-    // allow `action: Star` or `actions: ["Star","Flag"]`
     #[serde(default)]
     #[serde(alias = "action")]
     #[serde(deserialize_with = "deserialize_actions")]
     pub actions: Vec<FilterAction>,
 }
 
+impl AddressFilter {
+    /// Returns true if **any** of the `emails` matches **any** glob in `self.patterns`.
+    pub fn matches(&self, emails: &[String]) -> bool {
+        for pat in &self.patterns {
+            let matcher = Glob::new(pat)
+                .expect("invalid glob")
+                .compile_matcher();
+            for email in emails {
+                if matcher.is_match(email) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+impl MessageFilter {
+    /// Returns true if this filter matches the given message.
+    pub fn matches(&self, msg: &Message) -> bool {
+        // helper to extract just the email‐strings
+        let extract = |addrs: &Vec<EmailAddress>| {
+            addrs.iter().map(|ea| ea.email.clone()).collect::<Vec<_>>()
+        };
+
+        // TO
+        if let Some(ref af) = self.to {
+            let emails = extract(&msg.to);
+            if af.patterns.is_empty() {
+                if !emails.is_empty() { return false; }
+            } else if !af.matches(&emails) {
+                return false;
+            }
+        }
+        // CC
+        if let Some(ref af) = self.cc {
+            let emails = extract(&msg.cc);
+            if af.patterns.is_empty() {
+                if !emails.is_empty() { return false; }
+            } else if !af.matches(&emails) {
+                return false;
+            }
+        }
+        // FROM
+        if let Some(ref af) = self.from {
+            let emails = extract(&msg.from);
+            if af.patterns.is_empty() {
+                if !emails.is_empty() { return false; }
+            } else if !af.matches(&emails) {
+                return false;
+            }
+        }
+
+        // SUBJECT globs
+        if !self.subject.is_empty() {
+            let mut found = false;
+            for pat in &self.subject {
+                let matcher = Glob::new(pat).unwrap().compile_matcher();
+                if matcher.is_match(&msg.subject) {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return false;
+            }
+        }
+
+        // LABELS: included must _appear_; excluded must _not_
+        if !self.labels.included.is_empty() {
+            if !msg.labels.iter().any(|l| self.labels.included.contains(l)) {
+                return false;
+            }
+        }
+        if !self.labels.excluded.is_empty() {
+            if msg.labels.iter().any(|l| self.labels.excluded.contains(l)) {
+                return false;
+            }
+        }
+
+        true
+    }
+}
 
 fn deserialize_labels_filter<'de, D>(deserializer: D) -> Result<LabelsFilter, D::Error>
 where

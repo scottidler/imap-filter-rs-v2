@@ -1,10 +1,14 @@
-// src/state.rs
+// src/cfg/state_filter.rs
 
+use chrono::{DateTime, Utc};
+use eyre::eyre;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 use serde_yaml::Value;
 
 use crate::cfg::label::Label;
+use crate::message::Message;
+use crate::utils::parse_days;
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(untagged)]
@@ -44,6 +48,44 @@ pub struct StateFilter {
     /// optional, defaults to false
     #[serde(default)]
     pub nerf: bool,
+}
+
+impl StateFilter {
+    /// Only messages carrying _any_ of these labels (or all if empty) participate.
+    pub fn matches(&self, msg: &Message) -> bool {
+        if self.labels.is_empty() {
+            return true;
+        }
+        msg.labels.iter().any(|l| self.labels.contains(l))
+    }
+
+    /// Returns:
+    ///  - `Ok(None)` if TTL == Keep or not yet expired
+    ///  - `Ok(Some(action))` if TTL expired and we should apply `action`
+    pub fn evaluate_ttl(
+        &self,
+        msg: &Message,
+        now: DateTime<Utc>,
+    ) -> eyre::Result<Option<StateAction>> {
+        // parse the stored RFC3339 date back into a chrono DateTime
+        let internal: DateTime<Utc> = DateTime::parse_from_rfc3339(&msg.date)
+            .map_err(|e| eyre!("Bad INTERNALDATE '{}': {}", msg.date, e))?
+            .with_timezone(&Utc);
+
+        let age = now.signed_duration_since(internal);
+
+        let ttl_duration = match &self.ttl {
+            TTL::Keep => return Ok(None),
+            TTL::Simple(s) => parse_days(s)?,
+            TTL::Detailed { unread, .. } => parse_days(unread)?, // no `seen` info, so use `unread`
+        };
+
+        if age >= ttl_duration {
+            Ok(Some(self.action.clone()))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 fn deserialize_labels_vec<'de, D>(deserializer: D) -> Result<Vec<Label>, D::Error>
