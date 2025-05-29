@@ -127,8 +127,14 @@ where
         return Ok(());
     }
     ensure_label_exists(client, label)?;
-    let cmd = format!("+X-GM-LABELS (\"{}\")", label.replace('\\', "\\\\").replace('"', "\\\""));
-    client.uid_store(uid.to_string(), cmd)
+    // SILENT to suppress the untagged FETCH
+    let cmd = format!(
+        "+X-GM-LABELS.SILENT (\"{}\")",
+        label.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    debug!("before client.uid_store: cmd={}", cmd);
+    client
+        .uid_store(uid.to_string(), cmd)
         .map(|_| ())
         .map_err(|e| eyre!("Failed to add label '{}' to UID {}: {:?} | {}", label, uid, e, subject))
 }
@@ -143,13 +149,20 @@ pub fn del_label<T>(
 where
     T: Read + Write,
 {
-    let cmd = format!("-X-GM-LABELS (\"{}\")", label.replace('\\', "\\\\").replace('"', "\\\""));
-    client.uid_store(uid.to_string(), cmd)
+    // SILENT to suppress the untagged FETCH
+    let cmd = format!(
+        "-X-GM-LABELS.SILENT (\"{}\")",
+        label.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    client
+        .uid_store(uid.to_string(), cmd)
         .map(|_| ())
         .map_err(|e| eyre!("Failed to remove label '{}' from UID {}: {:?} | {}", label, uid, e, subject))
 }
 
-/// "Move" a message by adding the target label and removing INBOX.
+/// “Move” a message by moving it server-side from INBOX → `label`.
+/// Uses the UID MOVE extension (Gmail supports it), so you never have
+/// to manually remove “INBOX” yourself.
 pub fn uid_move_gmail<T>(
     client: &mut Session<T>,
     uid: u32,
@@ -159,6 +172,15 @@ pub fn uid_move_gmail<T>(
 where
     T: Read + Write,
 {
-    set_label(client, uid, label, subject)?;
-    del_label(client, uid, "INBOX", subject)
+    // make sure the destination mailbox/label exists
+    ensure_label_exists(client, label)?;
+
+    // this sends: `a1 UID MOVE 12345 "Purgatory"`
+    client
+        .uid_mv(uid.to_string(), label)
+        .map(|_| ())
+        .map_err(|e| eyre!(
+            "Failed to MOVE UID {} → `{}`: {:?} | {}",
+            uid, label, e, subject
+        ))
 }

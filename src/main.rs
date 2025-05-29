@@ -108,12 +108,15 @@ fn main() -> Result<()> {
 
     // 3) Connect & authenticate
     let tls = TlsConnector::builder().build()?;
-    let client = imap::connect((imap_domain.as_str(), 993), imap_domain.as_str(), &tls)
+    let mut client = imap::connect((imap_domain.as_str(), 993), imap_domain.as_str(), &tls)
         .map_err(|e| eyre!("Failed to connect to {}: {}", imap_domain, e))?
         .login(&imap_username, &imap_password)
         .map_err(|(e, _)| eyre!("IMAP login failed: {}", e))?;
 
     info!("✅ Connected and logged in");
+
+    client.debug = true;
+    debug!("Low‐level IMAP protocol debug enabled on client");
 
     // 4) Run the filter — pass the entire `config` along with the logged‐in client
     let mut filter = IMAPFilter::new(client, config);
