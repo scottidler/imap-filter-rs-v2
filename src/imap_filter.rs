@@ -7,6 +7,7 @@ use native_tls::TlsStream;
 use std::net::TcpStream;
 use chrono::Utc;
 
+use crate::cfg::config::Config;
 use crate::cfg::message_filter::{MessageFilter, FilterAction};
 use crate::cfg::state_filter::{StateFilter, StateAction};
 use crate::message::Message;
@@ -21,10 +22,13 @@ pub struct IMAPFilter {
 impl IMAPFilter {
     pub fn new(
         client: Session<TlsStream<TcpStream>>,
-        message_filters: Vec<MessageFilter>,
-        state_filters: Vec<StateFilter>,
+        config: Config,
     ) -> Self {
-        IMAPFilter { client, message_filters, state_filters }
+        IMAPFilter {
+            client,
+            message_filters: config.message_filters,
+            state_filters: config.state_filters
+        }
     }
 
     /// High‐level entry point: fetch everything, then run both phases ACL-style.

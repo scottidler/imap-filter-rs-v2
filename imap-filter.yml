@@ -1,7 +1,7 @@
 imap-domain: imap.gmail.com
 imap-username: scott.idler@tatari.tv
 
-filters:
+message-filters:
   # Match emails directly to me, from a tatari.tv sender, with no CC.
   # These are marked as Starred and Important
   - only-me-star:
@@ -19,7 +19,7 @@ filters:
       label: INBOX
       action: Flag
 
-states:
+state-filters:
   # Messages marked as Starred (either by filter or manually).
   # These are fully protected from expiry unless the Starred label is removed.
   - Starred:
@@ -36,7 +36,6 @@ states:
   # and are not Important or Starred.
   # These are candidates for aging out, based on how long ago they arrived.
   - Cull:
-      labels:
       ttl:
         read: 7d
         unread: 21d

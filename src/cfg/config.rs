@@ -22,15 +22,15 @@ pub struct Config {
     #[serde(alias = "imap-password")]
     pub imap_password: Option<String>,
 
-    // flatten name + body into Vec<MessageFilter>
-    #[serde(rename = "filters")]
+    /// flatten name + body into Vec<MessageFilter>
+    #[serde(rename = "message-filters")]
     #[serde(deserialize_with = "deserialize_named_filters")]
-    pub message_filter: Vec<MessageFilter>,
+    pub message_filters: Vec<MessageFilter>,
 
-    // flatten name + body into Vec<StateFilter>
-    #[serde(rename = "states")]
+    /// flatten name + body into Vec<StateFilter>
+    #[serde(rename = "state-filters")]
     #[serde(deserialize_with = "deserialize_named_states")]
-    pub state_filter: Vec<StateFilter>,
+    pub state_filters: Vec<StateFilter>,
 }
 
 pub fn load_config(cli: &Cli) -> Result<Config> {

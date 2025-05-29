@@ -1,10 +1,9 @@
-// src/message_filter.rs
+// src/cfg/message_filter.rs
 
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
-use serde_yaml::Value;
+use serde_yaml::{Value, from_value};
 use globset::Glob;
-
 use crate::cfg::label::Label;
 use crate::message::{EmailAddress, Message};
 
@@ -39,12 +38,15 @@ pub struct MessageFilter {
     pub name: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "deserialize_opt_address_filter")]
     pub to: Option<AddressFilter>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "deserialize_opt_address_filter")]
     pub cc: Option<AddressFilter>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "deserialize_opt_address_filter")]
     pub from: Option<AddressFilter>,
 
     #[serde(default)]
@@ -81,7 +83,7 @@ impl AddressFilter {
 impl MessageFilter {
     /// Returns true if this filter matches the given message.
     pub fn matches(&self, msg: &Message) -> bool {
-        // helper to extract just the email‐strings
+        // helper to extract just the email‑strings
         let extract = |addrs: &Vec<EmailAddress>| {
             addrs.iter().map(|ea| ea.email.clone()).collect::<Vec<_>>()
         };
@@ -142,6 +144,36 @@ impl MessageFilter {
         }
 
         true
+    }
+}
+
+/// Custom deserializer for `to`, `cc`, `from`:
+fn deserialize_opt_address_filter<'de, D>(deserializer: D) -> Result<Option<AddressFilter>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v = Value::deserialize(deserializer).map_err(de::Error::custom)?;
+    match v {
+        Value::Null => Ok(None),
+        Value::Sequence(seq) => {
+            let mut patterns = Vec::new();
+            for val in seq {
+                if let Value::String(s) = val {
+                    patterns.push(s);
+                } else {
+                    return Err(de::Error::custom("Invalid entry in address filter"));
+                }
+            }
+            Ok(Some(AddressFilter { patterns }))
+        }
+        Value::String(s) => Ok(Some(AddressFilter { patterns: vec![s] })),
+        other @ Value::Mapping(_) => {
+            // map mapping → AddressFilter via YAML
+            let af: AddressFilter = from_value(other)
+                .map_err(de::Error::custom)?;
+            Ok(Some(af))
+        }
+        _ => Err(de::Error::custom("Invalid address filter format")),
     }
 }
 
