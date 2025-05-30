@@ -6,8 +6,10 @@ use log::{debug, error};
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 use serde_yaml::{Value, from_value};
+use secure_string::SecureString;
 
 use crate::Cli;
+use crate::cfg::secure;
 use crate::cfg::state_filter::StateFilter;
 use crate::cfg::message_filter::MessageFilter;
 
@@ -19,8 +21,12 @@ pub struct Config {
     #[serde(alias = "imap-username")]
     pub imap_username: Option<String>,
 
-    #[serde(alias = "imap-password")]
-    pub imap_password: Option<String>,
+    #[serde(
+        alias = "imap-password",
+        default,
+        deserialize_with = "secure::deserialize_opt"
+    )]
+    pub imap_password: Option<SecureString>,
 
     /// flatten name + body into Vec<MessageFilter>
     #[serde(rename = "message-filters")]

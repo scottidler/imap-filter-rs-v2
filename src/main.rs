@@ -12,37 +12,14 @@ use std::io::Write;
 use std::path::PathBuf;
 
 mod cfg;
+mod cli;
 mod utils;
 mod message;
 mod imap_filter;
 
+use cli::Cli;
 use cfg::config::load_config;
 use imap_filter::IMAPFilter;
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "imap-filter",
-    version,
-    about = "IMAP email filtering CLI",
-    long_about = None
-)]
-struct Cli {
-    /// Path to config file
-    #[arg(short, long, default_value = "imap-filter.yml")]
-    config: PathBuf,
-
-    /// IMAP server domain
-    #[arg(short = 'd', long, env = "IMAP_DOMAIN")]
-    imap_domain: Option<String>,
-
-    /// IMAP username
-    #[arg(short = 'u', long, env = "IMAP_USERNAME")]
-    imap_username: Option<String>,
-
-    /// IMAP password
-    #[arg(short = 'p', long, env = "IMAP_PASSWORD")]
-    imap_password: Option<String>,
-}
 
 fn setup_logging() {
     let log_file = "imap-filter.log";
@@ -110,12 +87,12 @@ fn main() -> Result<()> {
     let tls = TlsConnector::builder().build()?;
     let mut client = imap::connect((imap_domain.as_str(), 993), imap_domain.as_str(), &tls)
         .map_err(|e| eyre!("Failed to connect to {}: {}", imap_domain, e))?
-        .login(&imap_username, &imap_password)
+        .login(&imap_username, imap_password.unsecure())
         .map_err(|(e, _)| eyre!("IMAP login failed: {}", e))?;
 
     info!("✅ Connected and logged in");
 
-    client.debug = true;
+    client.debug = cli.debug;
     debug!("Low‐level IMAP protocol debug enabled on client");
 
     // 4) Run the filter — pass the entire `config` along with the logged‐in client

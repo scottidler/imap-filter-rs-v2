@@ -41,9 +41,14 @@ impl Message {
             .collect();
 
         // owned parsing of address fields
-        let to = parse_addrs(headers.get("To"));
+        let mut to = parse_addrs(headers.get("To"));
         let cc = parse_addrs(headers.get("Cc"));
         let from = parse_addrs(headers.get("From"));
+
+        // if no “To:”, but we do have “Delivered-To:”, treat that as the recipient
+        if to.is_empty() {
+            to = parse_addrs(headers.get("Delivered-To"));
+        }
 
         // labels and subject
         let labels = raw_labels.into_iter().map(|s| Label::new(&s)).collect();

@@ -2,7 +2,7 @@
 
 use eyre::{Result, eyre};
 use imap::Session;
-use log::{debug, info};
+use log::{debug, error, info};
 use native_tls::TlsStream;
 use std::net::TcpStream;
 use chrono::Utc;
@@ -77,81 +77,59 @@ impl IMAPFilter {
         }
     }
 
-    /// Fetch UID, seq, FLAGS, INTERNALDATE, and the full RFC-2822 header.
     fn fetch_messages(&mut self) -> Result<Vec<Message>> {
         debug!("Fetching all messages from INBOX");
 
-        // 1) Select the mailbox
+        // 1) Select mailbox
         self.client.select("INBOX")?;
 
-        // 2) Search for all message sequence numbers
+        // 2) Search all messages
         let seqs = self.client.search("ALL")?;
         debug!("SEARCH returned {} messages in INBOX", seqs.len());
         if seqs.is_empty() {
             return Ok(vec![]);
         }
 
-        // 3) Build a comma-separated sequence-set
-        let seq_set = seqs
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
+        // 3) Build sequence-set
+        let seq_set = seqs.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(",");
         debug!("FETCHing records for sequences: {}", seq_set);
 
-        // 4) Fetch UID, FLAGS, INTERNALDATE, and full message header
+        // 4) Fetch UID, FLAGS, INTERNALDATE, and full header
         let fetches = self.client.fetch(&seq_set, "(UID FLAGS INTERNALDATE RFC822.HEADER)")?;
         debug!("FETCH returned {} records", fetches.len());
 
         let mut out = Vec::with_capacity(fetches.len());
         for fetch in fetches.iter() {
-            // a) UID and sequence number
             let uid = fetch.uid.unwrap_or(0);
             let seq = fetch.message;
             debug!("Parsing FETCH record: seq={}, uid={}", seq, uid);
 
-            // b) Full RFC-2822 header bytes
+            // extract full header bytes
             let raw_header = fetch.header().unwrap_or(&[]).to_vec();
-            assert!(
-                !raw_header.is_empty(),
-                "Empty fetched header for UID {}",
-                uid
-            );
+            // DEBUG: dump raw headers for diagnostics
+            let header_text = String::from_utf8_lossy(&raw_header).into_owned();
+            //debug!("Raw header for UID {}:\n{}", uid, header_text);
 
-            // c) Internal date → RFC3339 string
-            let date_str = fetch
-                .internal_date()
-                .map(|dt| dt.to_rfc3339())
-                .unwrap_or_default();
+            // convert internal date
+            let date_str = fetch.internal_date().map(|dt| dt.to_rfc3339()).unwrap_or_default();
 
-            // d) Retrieve Gmail labels & merge FLAGS
+            // labels
             let mut label_set = get_labels(&mut self.client, uid)?;
             for flag in fetch.flags() {
                 label_set.insert(flag.to_string());
             }
             let raw_labels: Vec<String> = label_set.into_iter().collect();
 
-            // e) Construct Message
+            // build Message
             let msg = Message::new(uid, seq, raw_header, raw_labels, date_str);
 
-            // f) Sanity-checks on parsed fields
-            assert!(
-                !msg.headers.is_empty(),
-                "Missing headers map for UID {}",
-                uid
-            );
-            assert!(
-                !msg.subject.is_empty(),
-                "Missing subject header for UID {}",
-                uid
-            );
-            assert!(
-                !msg.from.is_empty() || !msg.to.is_empty() || !msg.cc.is_empty(),
-                "No address fields (To/Cc/From) for UID {}",
-                uid
+            if msg.from.is_empty() && msg.to.is_empty() && msg.cc.is_empty() {
+                error!("UID {} address fields empty. Header was:\n{}", uid, header_text);
+            }
+            assert!(!msg.from.is_empty() || !msg.to.is_empty() || !msg.cc.is_empty(),
+                "No address fields (To/Cc/From) for UID {}", uid
             );
 
-            debug!("Constructed Message struct for UID {}", uid);
             out.push(msg);
         }
 
