@@ -71,7 +71,7 @@ fn main() -> Result<()> {
     info!("========== Starting IMAP Filter ==========");
 
     let cli = Cli::parse();
-    debug!("CLI args: {:?}", cli);
+    //debug!("CLI args: {:?}", cli);
 
     // 1) Load YAML config
     let config = load_config(&cli)?;

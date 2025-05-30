@@ -77,6 +77,88 @@ impl IMAPFilter {
         }
     }
 
+    /// Fetch UID, seq, FLAGS, INTERNALDATE, and the full RFC-2822 header.
+    fn fetch_messages(&mut self) -> Result<Vec<Message>> {
+        debug!("Fetching all messages from INBOX");
+
+        // 1) Select the mailbox
+        self.client.select("INBOX")?;
+
+        // 2) Search for all message sequence numbers
+        let seqs = self.client.search("ALL")?;
+        debug!("SEARCH returned {} messages in INBOX", seqs.len());
+        if seqs.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // 3) Build a comma-separated sequence-set
+        let seq_set = seqs
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        debug!("FETCHing records for sequences: {}", seq_set);
+
+        // 4) Fetch UID, FLAGS, INTERNALDATE, and full message header
+        let fetches = self.client.fetch(&seq_set, "(UID FLAGS INTERNALDATE RFC822.HEADER)")?;
+        debug!("FETCH returned {} records", fetches.len());
+
+        let mut out = Vec::with_capacity(fetches.len());
+        for fetch in fetches.iter() {
+            // a) UID and sequence number
+            let uid = fetch.uid.unwrap_or(0);
+            let seq = fetch.message;
+            debug!("Parsing FETCH record: seq={}, uid={}", seq, uid);
+
+            // b) Full RFC-2822 header bytes
+            let raw_header = fetch.header().unwrap_or(&[]).to_vec();
+            assert!(
+                !raw_header.is_empty(),
+                "Empty fetched header for UID {}",
+                uid
+            );
+
+            // c) Internal date → RFC3339 string
+            let date_str = fetch
+                .internal_date()
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default();
+
+            // d) Retrieve Gmail labels & merge FLAGS
+            let mut label_set = get_labels(&mut self.client, uid)?;
+            for flag in fetch.flags() {
+                label_set.insert(flag.to_string());
+            }
+            let raw_labels: Vec<String> = label_set.into_iter().collect();
+
+            // e) Construct Message
+            let msg = Message::new(uid, seq, raw_header, raw_labels, date_str);
+
+            // f) Sanity-checks on parsed fields
+            assert!(
+                !msg.headers.is_empty(),
+                "Missing headers map for UID {}",
+                uid
+            );
+            assert!(
+                !msg.subject.is_empty(),
+                "Missing subject header for UID {}",
+                uid
+            );
+            assert!(
+                !msg.from.is_empty() || !msg.to.is_empty() || !msg.cc.is_empty(),
+                "No address fields (To/Cc/From) for UID {}",
+                uid
+            );
+
+            debug!("Constructed Message struct for UID {}", uid);
+            out.push(msg);
+        }
+
+        debug!("Successfully fetched {} messages", out.len());
+        Ok(out)
+    }
+
     pub fn execute(&mut self) -> Result<()> {
         debug!("Entering IMAPFilter.execute");
 
@@ -103,7 +185,7 @@ impl IMAPFilter {
         let mut i = 0;
         while i < messages.len() {
             let msg = &messages[i];
-            debug!("message: {:#?}", msg);
+            //debug!("message: {:#?}", msg);
 
             let matched = self.message_filters.iter().find_map(|message_filter| {
                 if message_filter.matches(msg) {
@@ -135,7 +217,7 @@ impl IMAPFilter {
         let mut i = 0;
         while i < messages.len() {
             let msg = &messages[i];
-            debug!("message: {:#?}", msg);
+            //debug!("message: {:#?}", msg);
 
             if let Some(state_filter) = self.state_filters.iter().find(|sf| sf.matches(msg)) {
                 if let TTL::Keep = state_filter.ttl {
@@ -175,70 +257,5 @@ impl IMAPFilter {
         }
 
         Ok(())
-    }
-
-    /// Fetch UID, seq, FLAGS, X-GM-LABELS, INTERNALDATE, and the full header.
-    fn fetch_messages(&mut self) -> Result<Vec<Message>> {
-        debug!("Fetching all messages from INBOX");
-
-        // 1) Select the mailbox
-        self.client.select("INBOX")?;
-
-        // 2) Search for *sequence numbers* of every message
-        let seqs = self.client.search("ALL")?;
-        debug!("SEARCH returned {} messages in INBOX", seqs.len());
-        if seqs.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // 3) Build a comma-separated sequence-set
-        let seq_set = seqs
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        debug!("FETCHing headers for sequences: {}", seq_set);
-
-        // 4) Fetch the core fields (X-GM-LABELS fetched separately)
-        let fetches = self.client.fetch(
-            &seq_set,
-            "(UID FLAGS INTERNALDATE BODY[HEADER.FIELDS (TO CC FROM SUBJECT)])",
-        )?;
-        debug!("FETCH returned {} records", fetches.len());
-
-        let mut out = Vec::with_capacity(fetches.len());
-        for fetch in fetches.iter() {
-            // a) UID and sequence number
-            let uid = fetch.uid.unwrap_or(0);
-            let seq = fetch.message;
-            debug!("Parsing FETCH record: seq={}, uid={}", seq, uid);
-
-            // b) Raw header bytes for the four fields
-            let raw_header = fetch.body().unwrap_or(&[]).to_vec();
-
-            // c) Internal date → RFC3339 string
-            let date_str = fetch
-                .internal_date()
-                .map(|dt| dt.to_rfc3339())
-                .unwrap_or_default();
-
-            // d) Gmail label fetch via separate X-GM-LABELS call
-            let mut label_set = get_labels(&mut self.client, uid)?;
-
-            // e) Merge FLAGS into label set
-            for flag in fetch.flags() {
-                label_set.insert(flag.to_string());
-            }
-
-            let raw_labels: Vec<String> = label_set.into_iter().collect();
-
-            // f) Construct the Message
-            let msg = Message::new(uid, seq, raw_header, raw_labels, date_str);
-            debug!("Constructed Message struct for UID {}", uid);
-            out.push(msg);
-        }
-
-        debug!("Successfully fetched {} messages", out.len());
-        Ok(out)
     }
 }
