@@ -5,17 +5,79 @@ use eyre::eyre;
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 use serde_yaml::Value;
+use chrono;
 
 use crate::cfg::label::Label;
 use crate::message::Message;
 use crate::utils::parse_days;
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
-#[serde(untagged)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TTL {
     Keep,
-    Simple(String),
-    Detailed { read: String, unread: String },
+    Days(chrono::Duration),
+    Detailed { read: chrono::Duration, unread: chrono::Duration },
+}
+
+impl<'de> Deserialize<'de> for TTL {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct TTLVisitor;
+
+        impl<'de> de::Visitor<'de> for TTLVisitor {
+            type Value = TTL;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("Keep, '<n>d', or { read: '<n>d', unread: '<n>d' }")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value == "Keep" {
+                    Ok(TTL::Keep)
+                } else {
+                    parse_days(value)
+                        .map(TTL::Days)
+                        .map_err(|e| E::custom(format!("Invalid TTL '{}': {}", value, e)))
+                }
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                let mut read = None;
+                let mut unread = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "read" => {
+                            let v: String = map.next_value()?;
+                            read = Some(
+                                parse_days(&v).map_err(|e| de::Error::custom(e.to_string()))?
+                            );
+                        }
+                        "unread" => {
+                            let v: String = map.next_value()?;
+                            unread = Some(
+                                parse_days(&v).map_err(|e| de::Error::custom(e.to_string()))?
+                            );
+                        }
+                        _ => return Err(de::Error::unknown_field(&key, &["read", "unread"])),
+                    }
+                }
+
+                let read = read.ok_or_else(|| de::Error::missing_field("read"))?;
+                let unread = unread.ok_or_else(|| de::Error::missing_field("unread"))?;
+                Ok(TTL::Detailed { read, unread })
+            }
+        }
+
+        deserializer.deserialize_any(TTLVisitor)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -76,8 +138,8 @@ impl StateFilter {
 
         let ttl_duration = match &self.ttl {
             TTL::Keep => return Ok(None),
-            TTL::Simple(s) => parse_days(s)?,
-            TTL::Detailed { unread, .. } => parse_days(unread)?, // no `seen` info, so use `unread`
+            TTL::Days(dur) => *dur,
+            TTL::Detailed { unread, .. } => *unread,
         };
 
         if age >= ttl_duration {

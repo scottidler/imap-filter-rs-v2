@@ -5,8 +5,8 @@ use serde::Deserialize;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Label {
     Inbox,
-    Important,    // IMAP \Flagged → “Important”
-    Starred,      // Gmail STARRED
+    Important,    // Gmail “Important”
+    Starred,      // Gmail “Starred” (aka IMAP \Flagged)
     Sent,
     Draft,
     Trash,
@@ -15,18 +15,21 @@ pub enum Label {
 }
 
 impl Label {
-    /// Construct from the raw string returned by X-GM-LABELS.
-    /// E.g. "\\Inbox" → Label::Inbox, "MyProject" → Label::Custom("MyProject")
+    /// Construct from the raw string returned by X-GM-LABELS or your YAML.
     pub fn new(raw: &str) -> Self {
-        match raw {
-            "\\Inbox"       | "INBOX"    => Label::Inbox,
-            "\\Important"   | "IMPORTANT"=> Label::Important,
-            "\\Flagged"     | "STARRED"  => Label::Starred,
-            "\\Sent"        | "SENT"     => Label::Sent,
-            "\\Draft"       | "DRAFT"    => Label::Draft,
-            "\\Trash"       | "TRASH"    => Label::Trash,
-            "\\Spam"        | "SPAM"     => Label::Spam,
-            other                         => Label::Custom(other.to_string()),
+        // strip any leading backslashes, then uppercase for matching
+        let trimmed = raw.trim_start_matches('\\');
+        let up = trimmed.to_uppercase();
+        match up.as_str() {
+            "INBOX"      => Label::Inbox,
+            "IMPORTANT"  => Label::Important,
+            "FLAGGED" |
+            "STARRED"    => Label::Starred,
+            "SENT"       => Label::Sent,
+            "DRAFT"      => Label::Draft,
+            "TRASH"      => Label::Trash,
+            "SPAM"       => Label::Spam,
+            _other       => Label::Custom(trimmed.to_string()),
         }
     }
 }

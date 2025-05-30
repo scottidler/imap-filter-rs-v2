@@ -9,9 +9,49 @@ use chrono::Utc;
 
 use crate::cfg::config::Config;
 use crate::cfg::message_filter::{MessageFilter, FilterAction};
-use crate::cfg::state_filter::{StateFilter, StateAction};
-use crate::message::Message;
+use crate::cfg::state_filter::{StateFilter, StateAction, TTL};
 use crate::utils::{get_labels, set_label, uid_move_gmail};
+use crate::message::Message;
+
+fn apply_message_action(
+    client: &mut Session<TlsStream<TcpStream>>,
+    msg: &Message,
+    action: &FilterAction,
+) -> Result<()> {
+    match action {
+        FilterAction::Star => {
+            info!("⭐ Starring UID {}", msg.uid);
+            set_label(client, msg.uid, "\\Starred", &msg.subject)?;
+        }
+        FilterAction::Flag => {
+            info!("🚩 Flagging UID {}", msg.uid);
+            set_label(client, msg.uid, "\\Important", &msg.subject)?;
+        }
+        FilterAction::Move(label) => {
+            info!("➡️ Moving UID {} → {}", msg.uid, label);
+            uid_move_gmail(client, msg.uid, label, &msg.subject)?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_state_action(
+    client: &mut Session<TlsStream<TcpStream>>,
+    msg: &Message,
+    action: &StateAction,
+) -> Result<()> {
+    match action {
+        StateAction::Delete => {
+            info!("🗑 Deleting UID {}", msg.uid);
+            client.uid_store(msg.uid.to_string(), "+FLAGS (\\Deleted)")?;
+        }
+        StateAction::Move(label) => {
+            info!("➡️ Moving UID {} → {}", msg.uid, label);
+            uid_move_gmail(client, msg.uid, label, &msg.subject)?;
+        }
+    }
+    Ok(())
+}
 
 pub struct IMAPFilter {
     pub client: Session<TlsStream<TcpStream>>,
@@ -37,93 +77,103 @@ impl IMAPFilter {
         }
     }
 
-    /// High‐level entry point: fetch everything, then run both phases ACL-style.
     pub fn execute(&mut self) -> Result<()> {
         debug!("Entering IMAPFilter.execute");
 
-        // 1) Fetch the inbox once
         info!("Fetching all messages from INBOX");
         let mut messages = self.fetch_messages()?;
         info!("✅ Fetched {} messages", messages.len());
-
-        // 2) Phase 1 – MessageFilters
-        info!("→ Phase 1: applying {} MessageFilters", self.message_filters.len());
-        for message_filter in self.message_filters.clone() {
-            info!(
-                "Applying message filter '{}' to {} messages",
-                message_filter.name,
-                messages.len()
-            );
-            let mut remaining = Vec::with_capacity(messages.len());
-            for msg in messages.drain(..) {
-                debug!("Checking UID {} against filter '{}'", msg.uid, message_filter.name);
-                if message_filter.matches(&msg) {
-                    if let Some(action) = message_filter.actions.first() {
-                        info!(
-                            "Filter '{}' matched UID {}; applying action {:?}",
-                            message_filter.name, msg.uid, action
-                        );
-                        self.apply_message_action(&msg, action)?;
-                    }
-                } else {
-                    remaining.push(msg);
-                }
-            }
-            messages = remaining;
-            info!(
-                "After '{}', {} messages remain",
-                message_filter.name,
-                messages.len()
-            );
+        for message in &messages {
+            debug!("message: {:#?}", message);
         }
 
-        // 3) Phase 2 – StateFilters
-        let now = Utc::now();
-        info!("→ Phase 2: applying {} StateFilters", self.state_filters.len());
-        for state_filter in self.state_filters.clone() {
-            info!(
-                "Applying state filter '{}' to {} messages",
-                state_filter.name,
-                messages.len()
-            );
-            let mut remaining = Vec::with_capacity(messages.len());
-            for msg in messages.drain(..) {
-                debug!("Checking TTL for UID {} under state '{}'", msg.uid, state_filter.name);
-                if state_filter.matches(&msg) {
-                    if let Some(action) = state_filter.evaluate_ttl(&msg, now)? {
-                        if !state_filter.nerf {
-                            info!(
-                                "State '{}' expired for UID {}; applying {:?}",
-                                state_filter.name, msg.uid, action
-                            );
-                            self.apply_state_action(&msg, &action)?;
-                        } else {
-                            info!("NERF [{}] would {:?}", state_filter.name, action);
-                        }
-                    } else {
-                        debug!("State '{}' not yet expired for UID {}", state_filter.name, msg.uid);
-                        remaining.push(msg);
-                    }
-                } else {
-                    debug!(
-                        "State '{}' does not match labels for UID {}",
-                        state_filter.name, msg.uid
-                    );
-                    remaining.push(msg);
-                }
-            }
-            messages = remaining;
-            info!(
-                "After state '{}', {} messages remain",
-                state_filter.name,
-                messages.len()
-            );
-        }
+        self.process_message_filters(&mut messages)?;
+        self.process_state_filters(&mut messages)?;
 
         debug!("Finished all filters; {} messages untouched", messages.len());
         info!("Logging out from IMAP");
         self.client.logout()?;
         info!("✅ IMAP Filter execution completed");
+        Ok(())
+    }
+
+    fn process_message_filters(&mut self, messages: &mut Vec<Message>) -> Result<()> {
+        info!("→ Phase 1: applying {} MessageFilters", self.message_filters.len());
+
+        let mut i = 0;
+        while i < messages.len() {
+            let msg = &messages[i];
+            debug!("message: {:#?}", msg);
+
+            let matched = self.message_filters.iter().find_map(|message_filter| {
+                if message_filter.matches(msg) {
+                    message_filter.actions.first().map(|action| (message_filter.name.clone(), action.clone()))
+                } else {
+                    None
+                }
+            });
+
+            if let Some((filter_name, action)) = matched {
+                info!(
+                    "Filter '{}' matched UID {}; applying action {:?}",
+                    filter_name, msg.uid, action
+                );
+                apply_message_action(&mut self.client, msg, &action)?;
+                messages.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn process_state_filters(&mut self, messages: &mut Vec<Message>) -> Result<()> {
+        let now = Utc::now();
+        info!("→ Phase 2: applying {} StateFilters", self.state_filters.len());
+
+        let mut i = 0;
+        while i < messages.len() {
+            let msg = &messages[i];
+            debug!("message: {:#?}", msg);
+
+            if let Some(state_filter) = self.state_filters.iter().find(|sf| sf.matches(msg)) {
+                if let TTL::Keep = state_filter.ttl {
+                    debug!(
+                        "State '{}' is Keep; protecting UID {} from further filters",
+                        state_filter.name, msg.uid
+                    );
+                    messages.remove(i);
+                    continue;
+                }
+
+                if let Some(action) = state_filter.evaluate_ttl(msg, now)? {
+                    if !state_filter.nerf {
+                        info!(
+                            "State '{}' expired for UID {}; applying {:?}",
+                            state_filter.name, msg.uid, action
+                        );
+                        apply_state_action(&mut self.client, msg, &action)?;
+                    } else {
+                        info!("NERF [{}] would {:?}", state_filter.name, action);
+                    }
+                    messages.remove(i);
+                } else {
+                    debug!(
+                        "State '{}' not yet expired for UID {}",
+                        state_filter.name, msg.uid
+                    );
+                    i += 1;
+                }
+            } else {
+                debug!(
+                    "No state filter matched UID {}; retaining for next filter",
+                    msg.uid
+                );
+                i += 1;
+            }
+        }
+
         Ok(())
     }
 
@@ -149,10 +199,10 @@ impl IMAPFilter {
             .join(",");
         debug!("FETCHing headers for sequences: {}", seq_set);
 
-        // 4) Fetch only the header fields we need, plus UID & INTERNALDATE
+        // 4) Fetch the core fields (X-GM-LABELS fetched separately)
         let fetches = self.client.fetch(
             &seq_set,
-            "(UID INTERNALDATE BODY[HEADER.FIELDS (TO CC FROM SUBJECT)])",
+            "(UID FLAGS INTERNALDATE BODY[HEADER.FIELDS (TO CC FROM SUBJECT)])",
         )?;
         debug!("FETCH returned {} records", fetches.len());
 
@@ -172,11 +222,17 @@ impl IMAPFilter {
                 .map(|dt| dt.to_rfc3339())
                 .unwrap_or_default();
 
-            // d) Pull Gmail labels via our helper
-            let label_set = get_labels(&mut self.client, uid)?;
+            // d) Gmail label fetch via separate X-GM-LABELS call
+            let mut label_set = get_labels(&mut self.client, uid)?;
+
+            // e) Merge FLAGS into label set
+            for flag in fetch.flags() {
+                label_set.insert(flag.to_string());
+            }
+
             let raw_labels: Vec<String> = label_set.into_iter().collect();
 
-            // e) Construct the Message
+            // f) Construct the Message
             let msg = Message::new(uid, seq, raw_header, raw_labels, date_str);
             debug!("Constructed Message struct for UID {}", uid);
             out.push(msg);
@@ -184,37 +240,5 @@ impl IMAPFilter {
 
         debug!("Successfully fetched {} messages", out.len());
         Ok(out)
-    }
-
-    fn apply_message_action(&mut self, msg: &Message, action: &FilterAction) -> Result<()> {
-        match action {
-            FilterAction::Star => {
-                info!("⭐ Starring UID {}", msg.uid);
-                set_label(&mut self.client, msg.uid, "\\Starred", &msg.subject)?;
-            }
-            FilterAction::Flag => {
-                info!("🚩 Flagging UID {}", msg.uid);
-                set_label(&mut self.client, msg.uid, "\\Important", &msg.subject)?;
-            }
-            FilterAction::Move(label) => {
-                info!("➡️ Moving UID {} → {}", msg.uid, label);
-                uid_move_gmail(&mut self.client, msg.uid, label, &msg.subject)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn apply_state_action(&mut self, msg: &Message, action: &StateAction) -> Result<()> {
-        match action {
-            StateAction::Delete => {
-                info!("🗑 Deleting UID {}", msg.uid);
-                self.client.uid_store(msg.uid.to_string(), "+FLAGS (\\Deleted)")?;
-            }
-            StateAction::Move(label) => {
-                info!("➡️ Moving UID {} → {}", msg.uid, label);
-                uid_move_gmail(&mut self.client, msg.uid, label, &msg.subject)?;
-            }
-        }
-        Ok(())
     }
 }

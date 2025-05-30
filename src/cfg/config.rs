@@ -48,7 +48,7 @@ pub fn load_config(cli: &Cli) -> Result<Config> {
             eyre!("Failed to parse YAML: {}", e)
         })?;
 
-    debug!("Successfully loaded configuration: {:?}", cfg);
+    debug!("Successfully loaded configuration");
     Ok(cfg)
 }
 
