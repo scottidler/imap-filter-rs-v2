@@ -27,7 +27,7 @@ impl ThreadProcessor {
         action: &FilterAction,
     ) -> Result<Vec<Message>> {
         let mut processed = Vec::new();
-        
+
         // If message is part of a thread, apply action to all messages in thread
         if let Some(thread_id) = &msg.thread_id {
             if let Some(thread_msgs) = self.thread_map.get(thread_id) {
@@ -88,4 +88,4 @@ impl ThreadProcessor {
 
         Ok(processed)
     }
-} 
+}

@@ -98,7 +98,7 @@ impl IMAPFilter {
 
         // 4) Fetch UID, FLAGS, INTERNALDATE, thread info and full header
         let fetches = self.client.fetch(
-            &seq_set, 
+            &seq_set,
             "(UID FLAGS INTERNALDATE X-GM-THRID RFC822.HEADER)"
         )?;
         debug!("FETCH returned {} records", fetches.len());
@@ -207,7 +207,7 @@ impl IMAPFilter {
                     "Filter '{}' matched UID {}; applying action {:?}",
                     filter_name, msg.uid, action
                 );
-                
+
                 // Process entire thread
                 let processed = thread_processor.process_thread_message_filter(
                     &mut self.client,
