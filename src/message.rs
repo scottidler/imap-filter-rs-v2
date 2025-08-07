@@ -5,13 +5,13 @@ use mailparse::{addrparse, MailAddr};
 
 use crate::cfg::label::Label;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EmailAddress {
     pub name: String,
     pub email: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Message {
     pub uid: u32,
     pub seq: u32,
@@ -22,6 +22,11 @@ pub struct Message {
     pub date: String,
     pub labels: Vec<Label>,
     pub headers: HashMap<String, String>,
+    // Thread-related fields
+    pub message_id: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
+    pub thread_id: Option<String>, // Gmail X-GM-THRID
 }
 
 impl Message {
@@ -45,7 +50,7 @@ impl Message {
         let cc = parse_addrs(headers.get("Cc"));
         let from = parse_addrs(headers.get("From"));
 
-        // if no “To:”, but we do have “Delivered-To:”, treat that as the recipient
+        // if no "To:", but we do have "Delivered-To:", treat that as the recipient
         if to.is_empty() {
             to = parse_addrs(headers.get("Delivered-To"));
         }
@@ -53,6 +58,14 @@ impl Message {
         // labels and subject
         let labels = raw_labels.into_iter().map(|s| Label::new(&s)).collect();
         let subject = headers.get("Subject").cloned().unwrap_or_default();
+
+        // Parse thread-related headers
+        let message_id = headers.get("Message-ID").cloned();
+        let in_reply_to = headers.get("In-Reply-To").cloned();
+        let references = headers.get("References")
+            .map(|refs| refs.split_whitespace().map(String::from).collect())
+            .unwrap_or_default();
+        let thread_id = headers.get("X-GM-THRID").cloned();
 
         Message {
             uid,
@@ -64,6 +77,10 @@ impl Message {
             date: internal_date,
             labels,
             headers,
+            message_id,
+            in_reply_to,
+            references,
+            thread_id,
         }
     }
 }

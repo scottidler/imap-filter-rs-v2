@@ -6,14 +6,16 @@ use log::{debug, error, info};
 use native_tls::TlsStream;
 use std::net::TcpStream;
 use chrono::Utc;
+use std::collections::HashMap;
 
 use crate::cfg::config::Config;
 use crate::cfg::message_filter::{MessageFilter, FilterAction};
 use crate::cfg::state_filter::{StateFilter, StateAction, TTL};
 use crate::utils::{get_labels, set_label, uid_move_gmail};
 use crate::message::Message;
+use crate::thread::ThreadProcessor;
 
-fn apply_message_action(
+pub fn apply_message_action(
     client: &mut Session<TlsStream<TcpStream>>,
     msg: &Message,
     action: &FilterAction,
@@ -35,7 +37,7 @@ fn apply_message_action(
     Ok(())
 }
 
-fn apply_state_action(
+pub fn apply_state_action(
     client: &mut Session<TlsStream<TcpStream>>,
     msg: &Message,
     action: &StateAction,
@@ -94,9 +96,15 @@ impl IMAPFilter {
         let seq_set = seqs.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(",");
         debug!("FETCHing records for sequences: {}", seq_set);
 
-        // 4) Fetch UID, FLAGS, INTERNALDATE, and full header
-        let fetches = self.client.fetch(&seq_set, "(UID FLAGS INTERNALDATE RFC822.HEADER)")?;
+        // 4) Fetch UID, FLAGS, INTERNALDATE, thread info and full header
+        let fetches = self.client.fetch(
+            &seq_set, 
+            "(UID FLAGS INTERNALDATE X-GM-THRID RFC822.HEADER)"
+        )?;
         debug!("FETCH returned {} records", fetches.len());
+
+        // 5) Build a map of thread IDs to messages for later processing
+        let mut thread_map: HashMap<String, Vec<Message>> = HashMap::new();
 
         let mut out = Vec::with_capacity(fetches.len());
         for fetch in fetches.iter() {
@@ -130,6 +138,13 @@ impl IMAPFilter {
                 "No address fields (To/Cc/From) for UID {}", uid
             );
 
+            // Group messages by thread ID if available
+            if let Some(thread_id) = &msg.thread_id {
+                thread_map.entry(thread_id.clone())
+                    .or_default()
+                    .push(msg.clone());
+            }
+
             out.push(msg);
         }
 
@@ -147,8 +162,19 @@ impl IMAPFilter {
             debug!("message: {:#?}", message);
         }
 
-        self.process_message_filters(&mut messages)?;
-        self.process_state_filters(&mut messages)?;
+        // Create thread map from messages
+        let thread_map: HashMap<String, Vec<Message>> = messages.iter()
+            .filter_map(|msg| {
+                msg.thread_id.as_ref().map(|tid| (tid.clone(), msg.clone()))
+            })
+            .fold(HashMap::new(), |mut map, (tid, msg)| {
+                map.entry(tid).or_default().push(msg);
+                map
+            });
+
+        let thread_processor = ThreadProcessor::new(thread_map);
+        self.process_message_filters_with_threads(&mut messages, &thread_processor)?;
+        self.process_state_filters_with_threads(&mut messages, &thread_processor)?;
 
         debug!("Finished all filters; {} messages untouched", messages.len());
         info!("Logging out from IMAP");
@@ -157,13 +183,16 @@ impl IMAPFilter {
         Ok(())
     }
 
-    fn process_message_filters(&mut self, messages: &mut Vec<Message>) -> Result<()> {
+    fn process_message_filters_with_threads(
+        &mut self,
+        messages: &mut Vec<Message>,
+        thread_processor: &ThreadProcessor,
+    ) -> Result<()> {
         info!("→ Phase 1: applying {} MessageFilters", self.message_filters.len());
 
         let mut i = 0;
         while i < messages.len() {
             let msg = &messages[i];
-            //debug!("message: {:#?}", msg);
 
             let matched = self.message_filters.iter().find_map(|message_filter| {
                 if message_filter.matches(msg) {
@@ -178,8 +207,17 @@ impl IMAPFilter {
                     "Filter '{}' matched UID {}; applying action {:?}",
                     filter_name, msg.uid, action
                 );
-                apply_message_action(&mut self.client, msg, &action)?;
-                messages.remove(i);
+                
+                // Process entire thread
+                let processed = thread_processor.process_thread_message_filter(
+                    &mut self.client,
+                    msg,
+                    &self.message_filters[i],
+                    &action
+                )?;
+
+                // Remove all processed messages from the list
+                messages.retain(|m| !processed.iter().any(|p| p.uid == m.uid));
             } else {
                 i += 1;
             }
@@ -188,14 +226,17 @@ impl IMAPFilter {
         Ok(())
     }
 
-    fn process_state_filters(&mut self, messages: &mut Vec<Message>) -> Result<()> {
+    fn process_state_filters_with_threads(
+        &mut self,
+        messages: &mut Vec<Message>,
+        thread_processor: &ThreadProcessor,
+    ) -> Result<()> {
         let now = Utc::now();
         info!("→ Phase 2: applying {} StateFilters", self.state_filters.len());
 
         let mut i = 0;
         while i < messages.len() {
             let msg = &messages[i];
-            //debug!("message: {:#?}", msg);
 
             if let Some(state_filter) = self.state_filters.iter().find(|sf| sf.matches(msg)) {
                 if let TTL::Keep = state_filter.ttl {
@@ -207,24 +248,16 @@ impl IMAPFilter {
                     continue;
                 }
 
-                if let Some(action) = state_filter.evaluate_ttl(msg, now)? {
-                    if !state_filter.nerf {
-                        info!(
-                            "State '{}' expired for UID {}; applying {:?}",
-                            state_filter.name, msg.uid, action
-                        );
-                        apply_state_action(&mut self.client, msg, &action)?;
-                    } else {
-                        info!("NERF [{}] would {:?}", state_filter.name, action);
-                    }
-                    messages.remove(i);
-                } else {
-                    debug!(
-                        "State '{}' not yet expired for UID {}",
-                        state_filter.name, msg.uid
-                    );
-                    i += 1;
-                }
+                // Process entire thread for TTL
+                let processed = thread_processor.process_thread_state_filter(
+                    &mut self.client,
+                    msg,
+                    state_filter,
+                    &state_filter.action
+                )?;
+
+                // Remove all processed messages from the list
+                messages.retain(|m| !processed.iter().any(|p| p.uid == m.uid));
             } else {
                 debug!(
                     "No state filter matched UID {}; retaining for next filter",

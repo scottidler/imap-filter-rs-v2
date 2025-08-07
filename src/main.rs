@@ -16,6 +16,7 @@ mod cli;
 mod utils;
 mod message;
 mod imap_filter;
+mod thread;
 
 use cli::Cli;
 use cfg::config::load_config;
