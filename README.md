@@ -1,2 +1,2 @@
-# imap-filter-rs-v2
-imap-filter-rs-v2
+# imap-filter-rs-v3
+imap-filter-rs-v3
