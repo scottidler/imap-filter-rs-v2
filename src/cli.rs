@@ -8,7 +8,7 @@ use secure_string::SecureString;
 #[derive(Parser, Debug)]
 #[command(
     name = "imap-filter",
-    version,
+    version = env!("GIT_DESCRIBE"),
     about = "IMAP email filtering CLI",
     long_about = None
 )]
