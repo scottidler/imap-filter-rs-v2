@@ -1,19 +1,18 @@
 // src/imap_filter.rs
 
-use eyre::{Result, eyre};
+use eyre::Result;
 use imap::Session;
 use log::{debug, error, info};
 use native_tls::TlsStream;
-use std::net::TcpStream;
-use chrono::Utc;
 use std::collections::HashMap;
+use std::net::TcpStream;
 
 use crate::cfg::config::Config;
-use crate::cfg::message_filter::{MessageFilter, FilterAction};
-use crate::cfg::state_filter::{StateFilter, StateAction, TTL};
-use crate::utils::{get_labels, set_label, uid_move_gmail};
+use crate::cfg::message_filter::{FilterAction, MessageFilter};
+use crate::cfg::state_filter::{StateAction, StateFilter, Ttl};
 use crate::message::Message;
 use crate::thread::ThreadProcessor;
+use crate::utils::{extract_gmail_thread_id, get_labels, set_label, uid_move_gmail};
 
 pub fn apply_message_action(
     client: &mut Session<TlsStream<TcpStream>>,
@@ -62,10 +61,7 @@ pub struct IMAPFilter {
 }
 
 impl IMAPFilter {
-    pub fn new(
-        client: Session<TlsStream<TcpStream>>,
-        config: Config,
-    ) -> Self {
+    pub fn new(client: Session<TlsStream<TcpStream>>, config: Config) -> Self {
         debug!(
             "Initializing IMAPFilter with {} message_filters and {} state_filters",
             config.message_filters.len(),
@@ -97,10 +93,9 @@ impl IMAPFilter {
         debug!("FETCHing records for sequences: {}", seq_set);
 
         // 4) Fetch UID, FLAGS, INTERNALDATE, thread info and full header
-        let fetches = self.client.fetch(
-            &seq_set,
-            "(UID FLAGS INTERNALDATE X-GM-THRID RFC822.HEADER)"
-        )?;
+        let fetches = self
+            .client
+            .fetch(&seq_set, "(UID FLAGS INTERNALDATE X-GM-THRID RFC822.HEADER)")?;
         debug!("FETCH returned {} records", fetches.len());
 
         // 5) Build a map of thread IDs to messages for later processing
@@ -128,21 +123,25 @@ impl IMAPFilter {
             }
             let raw_labels: Vec<String> = label_set.into_iter().collect();
 
+            // Extract Gmail thread ID from the FETCH response
+            let thread_id = extract_gmail_thread_id(fetch);
+            debug!("UID {} thread_id: {:?}", uid, thread_id);
+
             // build Message
-            let msg = Message::new(uid, seq, raw_header, raw_labels, date_str);
+            let msg = Message::new(uid, seq, raw_header, raw_labels, date_str, thread_id);
 
             if msg.from.is_empty() && msg.to.is_empty() && msg.cc.is_empty() {
                 error!("UID {} address fields empty. Header was:\n{}", uid, header_text);
             }
-            assert!(!msg.from.is_empty() || !msg.to.is_empty() || !msg.cc.is_empty(),
-                "No address fields (To/Cc/From) for UID {}", uid
+            assert!(
+                !msg.from.is_empty() || !msg.to.is_empty() || !msg.cc.is_empty(),
+                "No address fields (To/Cc/From) for UID {}",
+                uid
             );
 
             // Group messages by thread ID if available
             if let Some(thread_id) = &msg.thread_id {
-                thread_map.entry(thread_id.clone())
-                    .or_default()
-                    .push(msg.clone());
+                thread_map.entry(thread_id.clone()).or_default().push(msg.clone());
             }
 
             out.push(msg);
@@ -163,10 +162,9 @@ impl IMAPFilter {
         }
 
         // Create thread map from messages
-        let thread_map: HashMap<String, Vec<Message>> = messages.iter()
-            .filter_map(|msg| {
-                msg.thread_id.as_ref().map(|tid| (tid.clone(), msg.clone()))
-            })
+        let thread_map: HashMap<String, Vec<Message>> = messages
+            .iter()
+            .filter_map(|msg| msg.thread_id.as_ref().map(|tid| (tid.clone(), msg.clone())))
             .fold(HashMap::new(), |mut map, (tid, msg)| {
                 map.entry(tid).or_default().push(msg);
                 map
@@ -196,25 +194,23 @@ impl IMAPFilter {
 
             let matched = self.message_filters.iter().find_map(|message_filter| {
                 if message_filter.matches(msg) {
-                    message_filter.actions.first().map(|action| (message_filter.name.clone(), action.clone()))
+                    message_filter
+                        .actions
+                        .first()
+                        .map(|action| (message_filter.clone(), action.clone()))
                 } else {
                     None
                 }
             });
 
-            if let Some((filter_name, action)) = matched {
+            if let Some((matched_filter, action)) = matched {
                 info!(
                     "Filter '{}' matched UID {}; applying action {:?}",
-                    filter_name, msg.uid, action
+                    matched_filter.name, msg.uid, action
                 );
 
                 // Process entire thread
-                let processed = thread_processor.process_thread_message_filter(
-                    &mut self.client,
-                    msg,
-                    &self.message_filters[i],
-                    &action
-                )?;
+                let processed = thread_processor.process_thread_message_filter(&mut self.client, msg, &action)?;
 
                 // Remove all processed messages from the list
                 messages.retain(|m| !processed.iter().any(|p| p.uid == m.uid));
@@ -231,7 +227,6 @@ impl IMAPFilter {
         messages: &mut Vec<Message>,
         thread_processor: &ThreadProcessor,
     ) -> Result<()> {
-        let now = Utc::now();
         info!("→ Phase 2: applying {} StateFilters", self.state_filters.len());
 
         let mut i = 0;
@@ -239,7 +234,7 @@ impl IMAPFilter {
             let msg = &messages[i];
 
             if let Some(state_filter) = self.state_filters.iter().find(|sf| sf.matches(msg)) {
-                if let TTL::Keep = state_filter.ttl {
+                if let Ttl::Keep = state_filter.ttl {
                     debug!(
                         "State '{}' is Keep; protecting UID {} from further filters",
                         state_filter.name, msg.uid
@@ -253,16 +248,13 @@ impl IMAPFilter {
                     &mut self.client,
                     msg,
                     state_filter,
-                    &state_filter.action
+                    &state_filter.action,
                 )?;
 
                 // Remove all processed messages from the list
                 messages.retain(|m| !processed.iter().any(|p| p.uid == m.uid));
             } else {
-                debug!(
-                    "No state filter matched UID {}; retaining for next filter",
-                    msg.uid
-                );
+                debug!("No state filter matched UID {}; retaining for next filter", msg.uid);
                 i += 1;
             }
         }

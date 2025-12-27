@@ -1,25 +1,22 @@
 // src/main.rs
 
-#![allow(dead_code, unused_imports)]
-
 use clap::Parser;
 use env_logger::Builder;
-use eyre::{Result, eyre};
-use log::{debug, info, error};
+use eyre::{eyre, Result};
+use log::{debug, error, info};
 use native_tls::TlsConnector;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
 
 mod cfg;
 mod cli;
-mod utils;
-mod message;
 mod imap_filter;
+mod message;
 mod thread;
+mod utils;
 
-use cli::Cli;
 use cfg::config::load_config;
+use cli::Cli;
 use imap_filter::IMAPFilter;
 
 fn setup_logging() {
@@ -55,34 +52,22 @@ fn main() -> Result<()> {
     let config = load_config(&cli)?;
 
     // 2) Resolve connection parameters, preferring CLI/env over config file
-    let imap_domain = cli
-        .imap_domain
-        .or(config.imap_domain.clone())
-        .ok_or_else(|| {
-            error!("IMAP domain is required but missing.");
-            eyre!("IMAP domain is required")
-        })?;
+    let imap_domain = cli.imap_domain.or(config.imap_domain.clone()).ok_or_else(|| {
+        error!("IMAP domain is required but missing.");
+        eyre!("IMAP domain is required")
+    })?;
 
-    let imap_username = cli
-        .imap_username
-        .or(config.imap_username.clone())
-        .ok_or_else(|| {
-            error!("IMAP username is required but missing.");
-            eyre!("IMAP username is required")
-        })?;
+    let imap_username = cli.imap_username.or(config.imap_username.clone()).ok_or_else(|| {
+        error!("IMAP username is required but missing.");
+        eyre!("IMAP username is required")
+    })?;
 
-    let imap_password = cli
-        .imap_password
-        .or(config.imap_password.clone())
-        .ok_or_else(|| {
-            error!("IMAP password is required but missing.");
-            eyre!("IMAP password is required")
-        })?;
+    let imap_password = cli.imap_password.or(config.imap_password.clone()).ok_or_else(|| {
+        error!("IMAP password is required but missing.");
+        eyre!("IMAP password is required")
+    })?;
 
-    debug!(
-        "Using IMAP server: {}  user: {}",
-        imap_domain, imap_username
-    );
+    debug!("Using IMAP server: {}  user: {}", imap_domain, imap_username);
 
     // 3) Connect & authenticate
     let tls = TlsConnector::builder().build()?;

@@ -1,19 +1,14 @@
 // src/cfg/message_filter.rs
 
-use serde::Deserialize;
-use serde::de::{self, Deserializer};
-use serde_yaml::{Value, from_value};
-use globset::Glob;
 use crate::cfg::label::Label;
 use crate::message::{EmailAddress, Message};
+use globset::Glob;
+use serde::de::{self, Deserializer};
+use serde::Deserialize;
+use serde_yaml::{from_value, Value};
 
 #[derive(Debug, PartialEq, Clone, Deserialize)]
 pub struct AddressFilter {
-    pub patterns: Vec<String>,
-}
-
-#[derive(Debug, PartialEq, Clone, Deserialize)]
-pub struct SubjectFilter {
     pub patterns: Vec<String>,
 }
 
@@ -67,9 +62,7 @@ impl AddressFilter {
     /// Returns true if **any** of the `emails` matches **any** glob in `self.patterns`.
     pub fn matches(&self, emails: &[String]) -> bool {
         for pat in &self.patterns {
-            let matcher = Glob::new(pat)
-                .expect("invalid glob")
-                .compile_matcher();
+            let matcher = Glob::new(pat).expect("invalid glob").compile_matcher();
             for email in emails {
                 if matcher.is_match(email) {
                     return true;
@@ -84,15 +77,15 @@ impl MessageFilter {
     /// Returns true if this filter matches the given message.
     pub fn matches(&self, msg: &Message) -> bool {
         // helper to extract just the email‑strings
-        let extract = |addrs: &Vec<EmailAddress>| {
-            addrs.iter().map(|ea| ea.email.clone()).collect::<Vec<_>>()
-        };
+        let extract = |addrs: &Vec<EmailAddress>| addrs.iter().map(|ea| ea.email.clone()).collect::<Vec<_>>();
 
         // TO
         if let Some(ref af) = self.to {
             let emails = extract(&msg.to);
             if af.patterns.is_empty() {
-                if !emails.is_empty() { return false; }
+                if !emails.is_empty() {
+                    return false;
+                }
             } else if !af.matches(&emails) {
                 return false;
             }
@@ -101,7 +94,9 @@ impl MessageFilter {
         if let Some(ref af) = self.cc {
             let emails = extract(&msg.cc);
             if af.patterns.is_empty() {
-                if !emails.is_empty() { return false; }
+                if !emails.is_empty() {
+                    return false;
+                }
             } else if !af.matches(&emails) {
                 return false;
             }
@@ -110,7 +105,9 @@ impl MessageFilter {
         if let Some(ref af) = self.from {
             let emails = extract(&msg.from);
             if af.patterns.is_empty() {
-                if !emails.is_empty() { return false; }
+                if !emails.is_empty() {
+                    return false;
+                }
             } else if !af.matches(&emails) {
                 return false;
             }
@@ -132,15 +129,11 @@ impl MessageFilter {
         }
 
         // LABELS: included must _appear_; excluded must _not_
-        if !self.labels.included.is_empty() {
-            if !msg.labels.iter().any(|l| self.labels.included.contains(l)) {
-                return false;
-            }
+        if !self.labels.included.is_empty() && !msg.labels.iter().any(|l| self.labels.included.contains(l)) {
+            return false;
         }
-        if !self.labels.excluded.is_empty() {
-            if msg.labels.iter().any(|l| self.labels.excluded.contains(l)) {
-                return false;
-            }
+        if !self.labels.excluded.is_empty() && msg.labels.iter().any(|l| self.labels.excluded.contains(l)) {
+            return false;
         }
 
         true
@@ -169,8 +162,7 @@ where
         Value::String(s) => Ok(Some(AddressFilter { patterns: vec![s] })),
         other @ Value::Mapping(_) => {
             // map mapping → AddressFilter via YAML
-            let af: AddressFilter = from_value(other)
-                .map_err(de::Error::custom)?;
+            let af: AddressFilter = from_value(other).map_err(de::Error::custom)?;
             Ok(Some(af))
         }
         _ => Err(de::Error::custom("Invalid address filter format")),
@@ -195,7 +187,10 @@ where
                     _ => return Err(de::Error::custom("Invalid label entry")),
                 }
             }
-            Ok(LabelsFilter { included, excluded: vec![] })
+            Ok(LabelsFilter {
+                included,
+                excluded: vec![],
+            })
         }
         Value::Mapping(map) => {
             let mut included = Vec::new();
@@ -232,9 +227,7 @@ where
                             return Err(de::Error::custom("`excluded` must be a sequence"));
                         }
                     }
-                    other => {
-                        return Err(de::Error::unknown_field(&other, &["included", "excluded"]))
-                    }
+                    other => return Err(de::Error::unknown_field(other, &["included", "excluded"])),
                 }
             }
             Ok(LabelsFilter { included, excluded })
@@ -275,4 +268,184 @@ where
         _ => return Err(de::Error::custom("Invalid `action` value")),
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_message(to: Vec<&str>, cc: Vec<&str>, from: &str, subject: &str) -> Message {
+        let to_header = if to.is_empty() { String::new() } else { format!("To: {}\r\n", to.join(", ")) };
+        let cc_header = if cc.is_empty() { String::new() } else { format!("Cc: {}\r\n", cc.join(", ")) };
+
+        let headers = format!(
+            "{}{}From: {}\r\nSubject: {}\r\n\r\n",
+            to_header, cc_header, from, subject
+        );
+
+        Message::new(
+            1,
+            1,
+            headers.into_bytes(),
+            vec![],
+            "2024-01-01T00:00:00+00:00".to_string(),
+            None,
+        )
+    }
+
+    #[test]
+    fn test_address_filter_matches_exact() {
+        let filter = AddressFilter {
+            patterns: vec!["test@example.com".to_string()],
+        };
+        assert!(filter.matches(&["test@example.com".to_string()]));
+        assert!(!filter.matches(&["other@example.com".to_string()]));
+    }
+
+    #[test]
+    fn test_address_filter_matches_glob() {
+        let filter = AddressFilter {
+            patterns: vec!["*@example.com".to_string()],
+        };
+        assert!(filter.matches(&["test@example.com".to_string()]));
+        assert!(filter.matches(&["anyone@example.com".to_string()]));
+        assert!(!filter.matches(&["test@other.com".to_string()]));
+    }
+
+    #[test]
+    fn test_address_filter_multiple_patterns() {
+        let filter = AddressFilter {
+            patterns: vec!["*@example.com".to_string(), "*@test.com".to_string()],
+        };
+        assert!(filter.matches(&["user@example.com".to_string()]));
+        assert!(filter.matches(&["user@test.com".to_string()]));
+        assert!(!filter.matches(&["user@other.com".to_string()]));
+    }
+
+    #[test]
+    fn test_message_filter_matches_to() {
+        let filter = MessageFilter {
+            name: "test".to_string(),
+            to: Some(AddressFilter {
+                patterns: vec!["me@example.com".to_string()],
+            }),
+            cc: None,
+            from: None,
+            subject: vec![],
+            labels: LabelsFilter::default(),
+            actions: vec![FilterAction::Star],
+        };
+
+        let msg = make_test_message(vec!["me@example.com"], vec![], "sender@example.com", "Test");
+        assert!(filter.matches(&msg));
+
+        let msg2 = make_test_message(vec!["other@example.com"], vec![], "sender@example.com", "Test");
+        assert!(!filter.matches(&msg2));
+    }
+
+    #[test]
+    fn test_message_filter_requires_empty_cc() {
+        let filter = MessageFilter {
+            name: "test".to_string(),
+            to: None,
+            cc: Some(AddressFilter { patterns: vec![] }), // empty = require no CC
+            from: None,
+            subject: vec![],
+            labels: LabelsFilter::default(),
+            actions: vec![FilterAction::Star],
+        };
+
+        // Message with no CC should match
+        let msg_no_cc = make_test_message(vec!["to@example.com"], vec![], "from@example.com", "Test");
+        assert!(filter.matches(&msg_no_cc));
+
+        // Message with CC should NOT match
+        let msg_with_cc = make_test_message(
+            vec!["to@example.com"],
+            vec!["cc@example.com"],
+            "from@example.com",
+            "Test",
+        );
+        assert!(!filter.matches(&msg_with_cc));
+    }
+
+    #[test]
+    fn test_message_filter_matches_from() {
+        let filter = MessageFilter {
+            name: "test".to_string(),
+            to: None,
+            cc: None,
+            from: Some(AddressFilter {
+                patterns: vec!["*@company.com".to_string()],
+            }),
+            subject: vec![],
+            labels: LabelsFilter::default(),
+            actions: vec![FilterAction::Star],
+        };
+
+        let msg = make_test_message(vec!["me@example.com"], vec![], "boss@company.com", "Important");
+        assert!(filter.matches(&msg));
+
+        let msg2 = make_test_message(vec!["me@example.com"], vec![], "spam@other.com", "Spam");
+        assert!(!filter.matches(&msg2));
+    }
+
+    #[test]
+    fn test_message_filter_matches_subject_glob() {
+        let filter = MessageFilter {
+            name: "test".to_string(),
+            to: None,
+            cc: None,
+            from: None,
+            subject: vec!["*urgent*".to_string()],
+            labels: LabelsFilter::default(),
+            actions: vec![FilterAction::Star],
+        };
+
+        let msg = make_test_message(
+            vec!["me@example.com"],
+            vec![],
+            "from@example.com",
+            "This is urgent please read",
+        );
+        assert!(filter.matches(&msg));
+
+        let msg2 = make_test_message(vec!["me@example.com"], vec![], "from@example.com", "Normal message");
+        assert!(!filter.matches(&msg2));
+    }
+
+    #[test]
+    fn test_message_filter_combined_conditions() {
+        // Filter: emails to me, from @company.com, with no CC
+        let filter = MessageFilter {
+            name: "only-me-from-company".to_string(),
+            to: Some(AddressFilter {
+                patterns: vec!["me@example.com".to_string()],
+            }),
+            cc: Some(AddressFilter { patterns: vec![] }), // no CC
+            from: Some(AddressFilter {
+                patterns: vec!["*@company.com".to_string()],
+            }),
+            subject: vec![],
+            labels: LabelsFilter::default(),
+            actions: vec![FilterAction::Star],
+        };
+
+        // Should match: to me, from company, no CC
+        let good = make_test_message(vec!["me@example.com"], vec![], "boss@company.com", "Good");
+        assert!(filter.matches(&good));
+
+        // Should NOT match: has CC
+        let with_cc = make_test_message(
+            vec!["me@example.com"],
+            vec!["other@example.com"],
+            "boss@company.com",
+            "CC",
+        );
+        assert!(!filter.matches(&with_cc));
+
+        // Should NOT match: wrong sender
+        let wrong_from = make_test_message(vec!["me@example.com"], vec![], "spam@other.com", "Spam");
+        assert!(!filter.matches(&wrong_from));
+    }
 }

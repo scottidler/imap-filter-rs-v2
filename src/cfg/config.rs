@@ -1,17 +1,17 @@
 // src/cfg/config.rs
 
-use std::fs;
 use eyre::{eyre, Result};
 use log::{debug, error};
-use serde::Deserialize;
-use serde::de::{self, Deserializer};
-use serde_yaml::{Value, from_value};
 use secure_string::SecureString;
+use serde::de::{self, Deserializer};
+use serde::Deserialize;
+use serde_yaml::{from_value, Value};
+use std::fs;
 
-use crate::Cli;
+use crate::cfg::message_filter::MessageFilter;
 use crate::cfg::secure;
 use crate::cfg::state_filter::StateFilter;
-use crate::cfg::message_filter::MessageFilter;
+use crate::Cli;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -21,11 +21,7 @@ pub struct Config {
     #[serde(alias = "imap-username")]
     pub imap_username: Option<String>,
 
-    #[serde(
-        alias = "imap-password",
-        default,
-        deserialize_with = "secure::deserialize_opt"
-    )]
+    #[serde(alias = "imap-password", default, deserialize_with = "secure::deserialize_opt")]
     pub imap_password: Option<SecureString>,
 
     /// flatten name + body into Vec<MessageFilter>
@@ -42,17 +38,15 @@ pub struct Config {
 pub fn load_config(cli: &Cli) -> Result<Config> {
     debug!("Loading configuration from {:?}", cli.config);
 
-    let content = fs::read_to_string(&cli.config)
-        .map_err(|e| {
-            error!("Failed to read config file {}: {}", cli.config.display(), e);
-            eyre!("Failed to read config file {}: {}", cli.config.display(), e)
-        })?;
+    let content = fs::read_to_string(&cli.config).map_err(|e| {
+        error!("Failed to read config file {}: {}", cli.config.display(), e);
+        eyre!("Failed to read config file {}: {}", cli.config.display(), e)
+    })?;
 
-    let cfg: Config = serde_yaml::from_str(&content)
-        .map_err(|e| {
-            error!("Failed to parse YAML: {}", e);
-            eyre!("Failed to parse YAML: {}", e)
-        })?;
+    let cfg: Config = serde_yaml::from_str(&content).map_err(|e| {
+        error!("Failed to parse YAML: {}", e);
+        eyre!("Failed to parse YAML: {}", e)
+    })?;
 
     debug!("Successfully loaded configuration");
     Ok(cfg)

@@ -1,13 +1,13 @@
-use std::collections::HashMap;
 use eyre::Result;
 use imap::Session;
-use native_tls::TlsStream;
-use std::net::TcpStream;
 use log::debug;
+use native_tls::TlsStream;
+use std::collections::HashMap;
+use std::net::TcpStream;
 
+use crate::cfg::message_filter::FilterAction;
+use crate::cfg::state_filter::{StateAction, StateFilter};
 use crate::message::Message;
-use crate::cfg::message_filter::{MessageFilter, FilterAction};
-use crate::cfg::state_filter::{StateFilter, StateAction};
 
 pub struct ThreadProcessor {
     thread_map: HashMap<String, Vec<Message>>,
@@ -23,7 +23,6 @@ impl ThreadProcessor {
         &self,
         client: &mut Session<TlsStream<TcpStream>>,
         msg: &Message,
-        filter: &MessageFilter,
         action: &FilterAction,
     ) -> Result<Vec<Message>> {
         let mut processed = Vec::new();
@@ -46,7 +45,9 @@ impl ThreadProcessor {
         Ok(processed)
     }
 
-    /// Processes a state filter action across an entire thread
+    /// Processes a state filter action across an entire thread.
+    /// TTL is evaluated based on the NEWEST message in the thread.
+    /// The thread only expires when the newest message has exceeded TTL.
     pub fn process_thread_state_filter(
         &self,
         client: &mut Session<TlsStream<TcpStream>>,
@@ -55,23 +56,26 @@ impl ThreadProcessor {
         action: &StateAction,
     ) -> Result<Vec<Message>> {
         let mut processed = Vec::new();
+        let now = chrono::Utc::now();
 
         // If message is part of a thread, evaluate TTL based on newest message
         if let Some(thread_id) = &msg.thread_id {
             if let Some(thread_msgs) = self.thread_map.get(thread_id) {
-                // Find newest message in thread
-                let newest_msg = thread_msgs.iter()
-                    .max_by_key(|m| m.date.clone())
-                    .unwrap_or(msg);
+                // Find newest message in thread (by date)
+                let newest_msg = thread_msgs.iter().max_by_key(|m| m.date.clone()).unwrap_or(msg);
 
-                // Only expire if ALL messages in thread have passed TTL
-                let all_expired = thread_msgs.iter().all(|m| {
-                    filter.evaluate_ttl(m, chrono::Utc::now())
-                        .map(|opt| opt.is_some())
-                        .unwrap_or(false)
-                });
+                // Evaluate TTL based on the newest message only
+                // If the newest message has expired, the whole thread expires
+                let thread_expired = filter
+                    .evaluate_ttl(newest_msg, now)
+                    .map(|opt| opt.is_some())
+                    .unwrap_or(false);
 
-                if all_expired {
+                if thread_expired {
+                    debug!(
+                        "Thread {} expired (newest msg UID {} date {})",
+                        thread_id, newest_msg.uid, newest_msg.date
+                    );
                     for thread_msg in thread_msgs {
                         crate::imap_filter::apply_state_action(client, thread_msg, action)?;
                         processed.push(thread_msg.clone());
@@ -80,7 +84,7 @@ impl ThreadProcessor {
             }
         } else {
             // Not part of a thread, evaluate normally
-            if let Ok(Some(_)) = filter.evaluate_ttl(msg, chrono::Utc::now()) {
+            if let Ok(Some(_)) = filter.evaluate_ttl(msg, now) {
                 crate::imap_filter::apply_state_action(client, msg, action)?;
                 processed.push(msg.clone());
             }

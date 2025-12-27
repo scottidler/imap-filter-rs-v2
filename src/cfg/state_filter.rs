@@ -1,32 +1,35 @@
 // src/cfg/state_filter.rs
 
+use chrono;
 use chrono::{DateTime, Utc};
 use eyre::eyre;
-use serde::Deserialize;
 use serde::de::{self, Deserializer};
+use serde::Deserialize;
 use serde_yaml::Value;
-use chrono;
 
 use crate::cfg::label::Label;
 use crate::message::Message;
 use crate::utils::parse_days;
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum TTL {
+pub enum Ttl {
     Keep,
     Days(chrono::Duration),
-    Detailed { read: chrono::Duration, unread: chrono::Duration },
+    Detailed {
+        read: chrono::Duration,
+        unread: chrono::Duration,
+    },
 }
 
-impl<'de> Deserialize<'de> for TTL {
+impl<'de> Deserialize<'de> for Ttl {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        struct TTLVisitor;
+        struct TtlVisitor;
 
-        impl<'de> de::Visitor<'de> for TTLVisitor {
-            type Value = TTL;
+        impl<'de> de::Visitor<'de> for TtlVisitor {
+            type Value = Ttl;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str("Keep, '<n>d', or { read: '<n>d', unread: '<n>d' }")
@@ -37,10 +40,10 @@ impl<'de> Deserialize<'de> for TTL {
                 E: de::Error,
             {
                 if value == "Keep" {
-                    Ok(TTL::Keep)
+                    Ok(Ttl::Keep)
                 } else {
                     parse_days(value)
-                        .map(TTL::Days)
+                        .map(Ttl::Days)
                         .map_err(|e| E::custom(format!("Invalid TTL '{}': {}", value, e)))
                 }
             }
@@ -56,27 +59,23 @@ impl<'de> Deserialize<'de> for TTL {
                     match key.as_str() {
                         "read" => {
                             let v: String = map.next_value()?;
-                            read = Some(
-                                parse_days(&v).map_err(|e| de::Error::custom(e.to_string()))?
-                            );
+                            read = Some(parse_days(&v).map_err(|e| de::Error::custom(e.to_string()))?);
                         }
                         "unread" => {
                             let v: String = map.next_value()?;
-                            unread = Some(
-                                parse_days(&v).map_err(|e| de::Error::custom(e.to_string()))?
-                            );
+                            unread = Some(parse_days(&v).map_err(|e| de::Error::custom(e.to_string()))?);
                         }
-                        _ => return Err(de::Error::unknown_field(&key, &["read", "unread"])),
+                        other => return Err(de::Error::unknown_field(other, &["read", "unread"])),
                     }
                 }
 
                 let read = read.ok_or_else(|| de::Error::missing_field("read"))?;
                 let unread = unread.ok_or_else(|| de::Error::missing_field("unread"))?;
-                Ok(TTL::Detailed { read, unread })
+                Ok(Ttl::Detailed { read, unread })
             }
         }
 
-        deserializer.deserialize_any(TTLVisitor)
+        deserializer.deserialize_any(TtlVisitor)
     }
 }
 
@@ -99,7 +98,7 @@ pub struct StateFilter {
     pub labels: Vec<Label>,
 
     /// **required** in YAML
-    pub ttl: TTL,
+    pub ttl: Ttl,
 
     /// support bare string or `{ Move: X }`
     #[serde(default = "default_action")]
@@ -124,11 +123,7 @@ impl StateFilter {
     /// Returns:
     ///  - `Ok(None)` if TTL == Keep or not yet expired
     ///  - `Ok(Some(action))` if TTL expired and we should apply `action`
-    pub fn evaluate_ttl(
-        &self,
-        msg: &Message,
-        now: DateTime<Utc>,
-    ) -> eyre::Result<Option<StateAction>> {
+    pub fn evaluate_ttl(&self, msg: &Message, now: DateTime<Utc>) -> eyre::Result<Option<StateAction>> {
         // parse the stored RFC3339 date back into a chrono DateTime
         let internal: DateTime<Utc> = DateTime::parse_from_rfc3339(&msg.date)
             .map_err(|e| eyre!("Bad INTERNALDATE '{}': {}", msg.date, e))?
@@ -136,10 +131,22 @@ impl StateFilter {
 
         let age = now.signed_duration_since(internal);
 
+        // Check if message is read (has \Seen flag)
+        let is_read = msg
+            .labels
+            .iter()
+            .any(|l| matches!(l, Label::Custom(s) if s == "Seen" || s == "\\Seen"));
+
         let ttl_duration = match &self.ttl {
-            TTL::Keep => return Ok(None),
-            TTL::Days(dur) => *dur,
-            TTL::Detailed { unread, .. } => *unread,
+            Ttl::Keep => return Ok(None),
+            Ttl::Days(dur) => *dur,
+            Ttl::Detailed { read, unread } => {
+                if is_read {
+                    *read
+                } else {
+                    *unread
+                }
+            }
         };
 
         if age >= ttl_duration {
@@ -198,7 +205,7 @@ where
             match key.as_str() {
                 "Move" => Ok(StateAction::Move(target)),
                 "Delete" => Ok(StateAction::Delete),
-                other => Err(de::Error::unknown_field(&other, &["Move", "Delete"])),
+                other => Err(de::Error::unknown_field(other, &["Move", "Delete"])),
             }
         }
         _ => Err(de::Error::custom("Invalid `action` value")),
@@ -207,4 +214,202 @@ where
 
 fn default_action() -> StateAction {
     StateAction::Move(String::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    fn make_test_message(date: &str, labels: Vec<&str>) -> Message {
+        Message::new(
+            1,
+            1,
+            b"From: test@example.com\r\nTo: recipient@example.com\r\n\r\n".to_vec(),
+            labels.into_iter().map(String::from).collect(),
+            date.to_string(),
+            None,
+        )
+    }
+
+    #[test]
+    fn test_ttl_keep_never_expires() {
+        let filter = StateFilter {
+            name: "test".to_string(),
+            labels: vec![],
+            ttl: Ttl::Keep,
+            action: StateAction::Move("Archive".to_string()),
+            nerf: false,
+        };
+
+        let msg = make_test_message("2020-01-01T00:00:00+00:00", vec![]);
+        let now = Utc::now();
+
+        // Even with a very old message, Keep should never expire
+        assert!(filter.evaluate_ttl(&msg, now).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_ttl_days_expired() {
+        let filter = StateFilter {
+            name: "test".to_string(),
+            labels: vec![],
+            ttl: Ttl::Days(Duration::days(7)),
+            action: StateAction::Move("Archive".to_string()),
+            nerf: false,
+        };
+
+        // Message from 10 days ago
+        let ten_days_ago = Utc::now() - Duration::days(10);
+        let msg = make_test_message(&ten_days_ago.to_rfc3339(), vec![]);
+        let now = Utc::now();
+
+        let result = filter.evaluate_ttl(&msg, now).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), StateAction::Move("Archive".to_string()));
+    }
+
+    #[test]
+    fn test_ttl_days_not_expired() {
+        let filter = StateFilter {
+            name: "test".to_string(),
+            labels: vec![],
+            ttl: Ttl::Days(Duration::days(7)),
+            action: StateAction::Move("Archive".to_string()),
+            nerf: false,
+        };
+
+        // Message from 3 days ago
+        let three_days_ago = Utc::now() - Duration::days(3);
+        let msg = make_test_message(&three_days_ago.to_rfc3339(), vec![]);
+        let now = Utc::now();
+
+        assert!(filter.evaluate_ttl(&msg, now).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_ttl_detailed_read_message() {
+        let filter = StateFilter {
+            name: "test".to_string(),
+            labels: vec![],
+            ttl: Ttl::Detailed {
+                read: Duration::days(7),
+                unread: Duration::days(21),
+            },
+            action: StateAction::Move("Archive".to_string()),
+            nerf: false,
+        };
+
+        // Read message from 10 days ago (past read TTL of 7 days)
+        let ten_days_ago = Utc::now() - Duration::days(10);
+        let msg = make_test_message(&ten_days_ago.to_rfc3339(), vec!["Seen"]);
+        let now = Utc::now();
+
+        let result = filter.evaluate_ttl(&msg, now).unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_ttl_detailed_unread_message_not_expired() {
+        let filter = StateFilter {
+            name: "test".to_string(),
+            labels: vec![],
+            ttl: Ttl::Detailed {
+                read: Duration::days(7),
+                unread: Duration::days(21),
+            },
+            action: StateAction::Move("Archive".to_string()),
+            nerf: false,
+        };
+
+        // Unread message from 10 days ago (not past unread TTL of 21 days)
+        let ten_days_ago = Utc::now() - Duration::days(10);
+        let msg = make_test_message(&ten_days_ago.to_rfc3339(), vec![]); // no Seen flag
+        let now = Utc::now();
+
+        // Should NOT be expired - 10 days < 21 days unread TTL
+        assert!(filter.evaluate_ttl(&msg, now).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_ttl_detailed_unread_message_expired() {
+        let filter = StateFilter {
+            name: "test".to_string(),
+            labels: vec![],
+            ttl: Ttl::Detailed {
+                read: Duration::days(7),
+                unread: Duration::days(21),
+            },
+            action: StateAction::Move("Archive".to_string()),
+            nerf: false,
+        };
+
+        // Unread message from 25 days ago (past unread TTL of 21 days)
+        let twenty_five_days_ago = Utc::now() - Duration::days(25);
+        let msg = make_test_message(&twenty_five_days_ago.to_rfc3339(), vec![]);
+        let now = Utc::now();
+
+        let result = filter.evaluate_ttl(&msg, now).unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_state_filter_matches_with_labels() {
+        let filter = StateFilter {
+            name: "test".to_string(),
+            labels: vec![Label::Starred, Label::Important],
+            ttl: Ttl::Keep,
+            action: StateAction::Move("Archive".to_string()),
+            nerf: false,
+        };
+
+        // Message with Starred label should match
+        let msg_starred = make_test_message("2024-01-01T00:00:00+00:00", vec!["Starred"]);
+        assert!(filter.matches(&msg_starred));
+
+        // Message without matching labels should not match
+        let msg_other = make_test_message("2024-01-01T00:00:00+00:00", vec!["INBOX"]);
+        assert!(!filter.matches(&msg_other));
+    }
+
+    #[test]
+    fn test_state_filter_empty_labels_matches_all() {
+        let filter = StateFilter {
+            name: "test".to_string(),
+            labels: vec![], // empty = match all
+            ttl: Ttl::Keep,
+            action: StateAction::Move("Archive".to_string()),
+            nerf: false,
+        };
+
+        let msg = make_test_message("2024-01-01T00:00:00+00:00", vec!["anything"]);
+        assert!(filter.matches(&msg));
+    }
+
+    #[test]
+    fn test_ttl_deserialize_keep() {
+        let yaml = "Keep";
+        let ttl: Ttl = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(ttl, Ttl::Keep);
+    }
+
+    #[test]
+    fn test_ttl_deserialize_days() {
+        let yaml = "7d";
+        let ttl: Ttl = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(ttl, Ttl::Days(Duration::days(7)));
+    }
+
+    #[test]
+    fn test_ttl_deserialize_detailed() {
+        let yaml = "read: 7d\nunread: 21d";
+        let ttl: Ttl = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            ttl,
+            Ttl::Detailed {
+                read: Duration::days(7),
+                unread: Duration::days(21)
+            }
+        );
+    }
 }

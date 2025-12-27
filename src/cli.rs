@@ -1,8 +1,8 @@
 // src/cli/cli.rs
 
 use clap::Parser;
-use std::path::PathBuf;
 use secure_string::SecureString;
+use std::path::PathBuf;
 
 /// Command-line interface options for imap-filter.
 #[derive(Parser, Debug)]
