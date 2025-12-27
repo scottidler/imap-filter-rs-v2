@@ -1,0 +1,9 @@
+From: sender@company.com
+To: me@example.com
+Subject: Direct message to you
+Date: Mon, 1 Jan 2024 10:00:00 +0000
+Message-ID: <direct-001@company.com>
+Content-Type: text/plain; charset="utf-8"
+
+This is a direct message with no CC recipients.
+

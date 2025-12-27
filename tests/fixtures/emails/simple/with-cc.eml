@@ -1,0 +1,10 @@
+From: sender@company.com
+To: me@example.com
+Cc: colleague@company.com, manager@company.com
+Subject: Team update with CC
+Date: Mon, 1 Jan 2024 10:00:00 +0000
+Message-ID: <cc-001@company.com>
+Content-Type: text/plain; charset="utf-8"
+
+This email has CC recipients and should not match "only to me" filters.
+
