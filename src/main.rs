@@ -10,6 +10,7 @@ use std::io::Write;
 
 mod cfg;
 mod cli;
+mod client_ops;
 mod imap_filter;
 mod message;
 mod oauth2;
@@ -51,7 +52,7 @@ fn main() -> Result<()> {
     //debug!("CLI args: {:?}", cli);
 
     // 1) Load YAML config
-    let config = load_config(&cli)?;
+    let config = load_config(&cli.config)?;
 
     // 2) Resolve connection parameters, preferring CLI/env over config file
     let imap_domain = cli.imap_domain.or(config.imap_domain.clone()).ok_or_else(|| {

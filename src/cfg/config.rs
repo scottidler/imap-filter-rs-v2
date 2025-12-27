@@ -7,11 +7,11 @@ use serde::de::{self, Deserializer};
 use serde::Deserialize;
 use serde_yaml::{from_value, Value};
 use std::fs;
+use std::path::Path;
 
 use crate::cfg::message_filter::MessageFilter;
 use crate::cfg::secure;
 use crate::cfg::state_filter::StateFilter;
-use crate::Cli;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -53,12 +53,12 @@ pub struct Config {
     pub state_filters: Vec<StateFilter>,
 }
 
-pub fn load_config(cli: &Cli) -> Result<Config> {
-    debug!("Loading configuration from {:?}", cli.config);
+pub fn load_config(config_path: &Path) -> Result<Config> {
+    debug!("Loading configuration from {:?}", config_path);
 
-    let content = fs::read_to_string(&cli.config).map_err(|e| {
-        error!("Failed to read config file {}: {}", cli.config.display(), e);
-        eyre!("Failed to read config file {}: {}", cli.config.display(), e)
+    let content = fs::read_to_string(config_path).map_err(|e| {
+        error!("Failed to read config file {}: {}", config_path.display(), e);
+        eyre!("Failed to read config file {}: {}", config_path.display(), e)
     })?;
 
     let cfg: Config = serde_yaml::from_str(&content).map_err(|e| {

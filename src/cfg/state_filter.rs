@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_yaml::Value;
 
 use crate::cfg::label::Label;
+use crate::client_ops::Clock;
 use crate::message::Message;
 use crate::utils::parse_days;
 
@@ -123,7 +124,10 @@ impl StateFilter {
     /// Returns:
     ///  - `Ok(None)` if TTL == Keep or not yet expired
     ///  - `Ok(Some(action))` if TTL expired and we should apply `action`
-    pub fn evaluate_ttl(&self, msg: &Message, now: DateTime<Utc>) -> eyre::Result<Option<StateAction>> {
+    ///
+    /// Accepts a clock parameter to allow testing with virtual time.
+    pub fn evaluate_ttl<C: Clock>(&self, msg: &Message, clock: &C) -> eyre::Result<Option<StateAction>> {
+        let now = clock.now();
         // parse the stored RFC3339 date back into a chrono DateTime
         let internal: DateTime<Utc> = DateTime::parse_from_rfc3339(&msg.date)
             .map_err(|e| eyre!("Bad INTERNALDATE '{}': {}", msg.date, e))?
@@ -219,6 +223,7 @@ fn default_action() -> StateAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client_ops::RealClock;
     use chrono::Duration;
 
     fn make_test_message(date: &str, labels: Vec<&str>) -> Message {
@@ -243,10 +248,10 @@ mod tests {
         };
 
         let msg = make_test_message("2020-01-01T00:00:00+00:00", vec![]);
-        let now = Utc::now();
+        let clock = RealClock;
 
         // Even with a very old message, Keep should never expire
-        assert!(filter.evaluate_ttl(&msg, now).unwrap().is_none());
+        assert!(filter.evaluate_ttl(&msg, &clock).unwrap().is_none());
     }
 
     #[test]
@@ -262,9 +267,9 @@ mod tests {
         // Message from 10 days ago
         let ten_days_ago = Utc::now() - Duration::days(10);
         let msg = make_test_message(&ten_days_ago.to_rfc3339(), vec![]);
-        let now = Utc::now();
+        let clock = RealClock;
 
-        let result = filter.evaluate_ttl(&msg, now).unwrap();
+        let result = filter.evaluate_ttl(&msg, &clock).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap(), StateAction::Move("Archive".to_string()));
     }
@@ -282,9 +287,9 @@ mod tests {
         // Message from 3 days ago
         let three_days_ago = Utc::now() - Duration::days(3);
         let msg = make_test_message(&three_days_ago.to_rfc3339(), vec![]);
-        let now = Utc::now();
+        let clock = RealClock;
 
-        assert!(filter.evaluate_ttl(&msg, now).unwrap().is_none());
+        assert!(filter.evaluate_ttl(&msg, &clock).unwrap().is_none());
     }
 
     #[test]
@@ -303,9 +308,9 @@ mod tests {
         // Read message from 10 days ago (past read TTL of 7 days)
         let ten_days_ago = Utc::now() - Duration::days(10);
         let msg = make_test_message(&ten_days_ago.to_rfc3339(), vec!["Seen"]);
-        let now = Utc::now();
+        let clock = RealClock;
 
-        let result = filter.evaluate_ttl(&msg, now).unwrap();
+        let result = filter.evaluate_ttl(&msg, &clock).unwrap();
         assert!(result.is_some());
     }
 
@@ -325,10 +330,10 @@ mod tests {
         // Unread message from 10 days ago (not past unread TTL of 21 days)
         let ten_days_ago = Utc::now() - Duration::days(10);
         let msg = make_test_message(&ten_days_ago.to_rfc3339(), vec![]); // no Seen flag
-        let now = Utc::now();
+        let clock = RealClock;
 
         // Should NOT be expired - 10 days < 21 days unread TTL
-        assert!(filter.evaluate_ttl(&msg, now).unwrap().is_none());
+        assert!(filter.evaluate_ttl(&msg, &clock).unwrap().is_none());
     }
 
     #[test]
@@ -347,9 +352,9 @@ mod tests {
         // Unread message from 25 days ago (past unread TTL of 21 days)
         let twenty_five_days_ago = Utc::now() - Duration::days(25);
         let msg = make_test_message(&twenty_five_days_ago.to_rfc3339(), vec![]);
-        let now = Utc::now();
+        let clock = RealClock;
 
-        let result = filter.evaluate_ttl(&msg, now).unwrap();
+        let result = filter.evaluate_ttl(&msg, &clock).unwrap();
         assert!(result.is_some());
     }
 

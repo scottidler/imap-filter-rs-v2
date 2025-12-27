@@ -7,6 +7,7 @@ use std::net::TcpStream;
 
 use crate::cfg::message_filter::FilterAction;
 use crate::cfg::state_filter::{StateAction, StateFilter};
+use crate::client_ops::{Clock, RealClock};
 use crate::message::Message;
 
 /// Builds a thread map from messages using available thread identification methods.
@@ -191,8 +192,21 @@ impl ThreadProcessor {
         filter: &StateFilter,
         action: &StateAction,
     ) -> Result<Vec<Message>> {
+        self.process_thread_state_filter_with_clock(client, msg, filter, action, &RealClock)
+    }
+
+    /// Processes a state filter action across an entire thread with a custom clock.
+    /// TTL is evaluated based on the NEWEST message in the thread.
+    /// The thread only expires when the newest message has exceeded TTL.
+    pub fn process_thread_state_filter_with_clock<C: Clock>(
+        &self,
+        client: &mut Session<TlsStream<TcpStream>>,
+        msg: &Message,
+        filter: &StateFilter,
+        action: &StateAction,
+        clock: &C,
+    ) -> Result<Vec<Message>> {
         let mut processed = Vec::new();
-        let now = chrono::Utc::now();
 
         // Find the thread this message belongs to
         if let Some(thread_id) = self.get_thread_id(msg) {
@@ -203,7 +217,7 @@ impl ThreadProcessor {
                 // Evaluate TTL based on the newest message only
                 // If the newest message has expired, the whole thread expires
                 let thread_expired = filter
-                    .evaluate_ttl(newest_msg, now)
+                    .evaluate_ttl(newest_msg, clock)
                     .map(|opt| opt.is_some())
                     .unwrap_or(false);
 
@@ -223,7 +237,7 @@ impl ThreadProcessor {
             }
         } else {
             // Not part of a thread, evaluate normally
-            if let Ok(Some(_)) = filter.evaluate_ttl(msg, now) {
+            if let Ok(Some(_)) = filter.evaluate_ttl(msg, clock) {
                 crate::imap_filter::apply_state_action(client, msg, action)?;
                 processed.push(msg.clone());
             }

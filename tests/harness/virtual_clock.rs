@@ -6,6 +6,10 @@
 use chrono::{DateTime, Duration, Utc};
 use std::sync::{Arc, RwLock};
 
+// Re-export Clock trait and RealClock from the main crate
+pub use imap_filter::client_ops::Clock;
+pub use imap_filter::client_ops::RealClock;
+
 /// A clock that can be controlled for testing.
 /// Thread-safe via Arc<RwLock<...>>.
 #[derive(Clone)]
@@ -62,25 +66,9 @@ impl Default for VirtualClock {
     }
 }
 
-/// Trait for components that need to access the current time.
-/// This allows production code to use real time while tests use virtual time.
-pub trait Clock: Clone + Send + Sync {
-    fn now(&self) -> DateTime<Utc>;
-}
-
 impl Clock for VirtualClock {
     fn now(&self) -> DateTime<Utc> {
-        self.now()
-    }
-}
-
-/// Real clock for production use - simply returns Utc::now().
-#[derive(Clone, Default)]
-pub struct RealClock;
-
-impl Clock for RealClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+        VirtualClock::now(self)
     }
 }
 
