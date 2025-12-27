@@ -155,10 +155,7 @@ impl VirtualMailbox {
 
     /// Get all non-deleted messages.
     pub fn get_all_messages(&self) -> Vec<&MailboxMessage> {
-        self.messages
-            .values()
-            .filter(|m| !m.deleted)
-            .collect()
+        self.messages.values().filter(|m| !m.deleted).collect()
     }
 
     /// Get messages with a specific label.
@@ -470,4 +467,3 @@ mod tests {
         assert_eq!(mailbox.message_count(), 1);
     }
 }
-

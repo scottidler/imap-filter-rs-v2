@@ -371,4 +371,3 @@ Body
         assert_eq!(extract_email("  spaced@example.com  "), "spaced@example.com");
     }
 }
-

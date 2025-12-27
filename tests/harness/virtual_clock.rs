@@ -203,4 +203,3 @@ mod tests {
         assert_eq!(use_clock(&clock), specific_time);
     }
 }
-
