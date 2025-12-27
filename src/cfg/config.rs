@@ -24,6 +24,24 @@ pub struct Config {
     #[serde(alias = "imap-password", default, deserialize_with = "secure::deserialize_opt")]
     pub imap_password: Option<SecureString>,
 
+    // OAuth2 authentication (alternative to password)
+    #[serde(alias = "oauth2-client-id", default, deserialize_with = "secure::deserialize_opt")]
+    pub oauth2_client_id: Option<SecureString>,
+
+    #[serde(
+        alias = "oauth2-client-secret",
+        default,
+        deserialize_with = "secure::deserialize_opt"
+    )]
+    pub oauth2_client_secret: Option<SecureString>,
+
+    #[serde(
+        alias = "oauth2-refresh-token",
+        default,
+        deserialize_with = "secure::deserialize_opt"
+    )]
+    pub oauth2_refresh_token: Option<SecureString>,
+
     /// flatten name + body into Vec<MessageFilter>
     #[serde(rename = "message-filters")]
     #[serde(deserialize_with = "deserialize_named_filters")]

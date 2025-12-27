@@ -1,4 +1,4 @@
-// src/cli/cli.rs
+// src/cli.rs
 
 use clap::Parser;
 use secure_string::SecureString;
@@ -25,9 +25,21 @@ pub struct Cli {
     #[arg(short = 'U', long, env = "IMAP_USERNAME")]
     pub imap_username: Option<String>,
 
-    /// IMAP password
+    /// IMAP password (use this OR OAuth2 credentials)
     #[arg(short = 'P', long, env = "IMAP_PASSWORD")]
     pub imap_password: Option<SecureString>,
+
+    /// OAuth2 client ID (from Google Cloud Console)
+    #[arg(long, env = "OAUTH2_CLIENT_ID")]
+    pub oauth2_client_id: Option<SecureString>,
+
+    /// OAuth2 client secret (from Google Cloud Console)
+    #[arg(long, env = "OAUTH2_CLIENT_SECRET")]
+    pub oauth2_client_secret: Option<SecureString>,
+
+    /// OAuth2 refresh token (obtained from OAuth2 flow)
+    #[arg(long, env = "OAUTH2_REFRESH_TOKEN")]
+    pub oauth2_refresh_token: Option<SecureString>,
 
     #[arg(short, long, help = "turn on client.debug logging")]
     pub debug: bool,
