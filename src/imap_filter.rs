@@ -11,7 +11,7 @@ use crate::cfg::message_filter::{FilterAction, MessageFilter};
 use crate::cfg::state_filter::{StateAction, StateFilter, Ttl};
 use crate::message::Message;
 use crate::thread::ThreadProcessor;
-use crate::utils::{extract_gmail_thread_id, get_labels, set_label, uid_move_gmail};
+use crate::utils::{get_labels, set_label, uid_move_gmail};
 
 pub fn apply_message_action(
     client: &mut Session<TlsStream<TcpStream>>,
@@ -99,10 +99,13 @@ impl IMAPFilter {
         let seq_set = seqs.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(",");
         debug!("FETCHing records for sequences: {}", seq_set);
 
-        // 4) Fetch UID, FLAGS, INTERNALDATE, thread info and full header
+        // 4) Fetch UID, FLAGS, INTERNALDATE, and full header
+        // NOTE: X-GM-THRID is NOT included here because the imap crate's parser
+        // can't handle Gmail extensions in combined fetch responses.
+        // We fetch X-GM-THRID separately below using get_gmail_thread_id().
         let fetches = self
             .client
-            .fetch(&seq_set, "(UID FLAGS INTERNALDATE X-GM-THRID RFC822.HEADER)")?;
+            .fetch(&seq_set, "(UID FLAGS INTERNALDATE RFC822.HEADER)")?;
         debug!("FETCH returned {} records", fetches.len());
 
         let mut out = Vec::with_capacity(fetches.len());
@@ -119,16 +122,16 @@ impl IMAPFilter {
             // convert internal date
             let date_str = fetch.internal_date().map(|dt| dt.to_rfc3339()).unwrap_or_default();
 
-            // labels
+            // labels (fetches X-GM-LABELS separately - this works)
             let mut label_set = get_labels(&mut self.client, uid)?;
             for flag in fetch.flags() {
                 label_set.insert(flag.to_string());
             }
             let raw_labels: Vec<String> = label_set.into_iter().collect();
 
-            // Extract Gmail thread ID from the FETCH response
-            let thread_id = extract_gmail_thread_id(fetch);
-            debug!("UID {} thread_id: {:?}", uid, thread_id);
+            // Thread ID will be computed from standard headers (Message-ID, In-Reply-To, References)
+            // after all messages are fetched. Pass None here - thread grouping happens in execute().
+            let thread_id: Option<String> = None;
 
             // build Message
             let msg = Message::new(uid, seq, raw_header, raw_labels, date_str, thread_id);

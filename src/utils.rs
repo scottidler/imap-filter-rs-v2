@@ -62,19 +62,9 @@ where
     Ok(labels)
 }
 
-/// Extract Gmail Thread ID (X-GM-THRID) from an IMAP Fetch response.
-///
-/// Gmail provides X-GM-THRID as an IMAP extension attribute (not a header).
-/// It must be parsed from the raw FETCH response debug output.
-///
-/// Example response: "... X-GM-THRID 1852322999435237597 ..."
-pub fn extract_gmail_thread_id(fetch: &imap::types::Fetch) -> Option<String> {
-    let raw = format!("{:?}", fetch);
-    extract_gmail_extension(&raw, "X-GM-THRID")
-}
-
 /// Helper to extract a Gmail extension field value from raw FETCH output.
 /// The value is expected to be a numeric ID following the field name.
+#[allow(dead_code)] // Used in tests and may be useful for future Gmail-specific features
 fn extract_gmail_extension(raw: &str, field: &str) -> Option<String> {
     let pattern = format!(r"{}\s+(\d+)", field);
     let re = Regex::new(&pattern).ok()?;
