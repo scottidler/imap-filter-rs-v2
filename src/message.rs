@@ -7,7 +7,6 @@ use crate::cfg::label::Label;
 
 #[derive(Debug, Clone)]
 pub struct EmailAddress {
-    #[allow(dead_code)] // Display name for sender_display() and future UI
     pub name: String,
     pub email: String,
 }
@@ -23,14 +22,10 @@ pub struct Message {
     pub subject: String,
     pub date: String,
     pub labels: Vec<Label>,
-    #[allow(dead_code)] // Raw headers for future header-based filtering
     pub headers: HashMap<String, String>,
-    // Thread-related fields for standard IMAP (Phase 2: non-Gmail servers)
-    #[allow(dead_code)] // Used in Phase 2: standard IMAP thread grouping
+    // Thread-related fields for standard IMAP thread grouping
     pub message_id: Option<String>,
-    #[allow(dead_code)] // Used in Phase 2: standard IMAP thread grouping
     pub in_reply_to: Option<String>,
-    #[allow(dead_code)] // Used in Phase 2: standard IMAP thread grouping
     pub references: Vec<String>,
     pub thread_id: Option<String>, // Gmail X-GM-THRID
 }
@@ -93,7 +88,6 @@ impl Message {
     }
 
     /// Get the display name of the first sender, or their email if no name
-    #[allow(dead_code)] // Used by logging and future UI features
     pub fn sender_display(&self) -> String {
         self.from
             .first()

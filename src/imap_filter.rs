@@ -4,7 +4,6 @@ use eyre::Result;
 use imap::Session;
 use log::{debug, error, info};
 use native_tls::TlsStream;
-use std::collections::HashMap;
 use std::net::TcpStream;
 
 use crate::cfg::config::Config;
@@ -19,17 +18,21 @@ pub fn apply_message_action(
     msg: &Message,
     action: &FilterAction,
 ) -> Result<()> {
+    let sender = msg.sender_display();
     match action {
         FilterAction::Star => {
-            info!("⭐ Starring UID {}", msg.uid);
+            info!("⭐ Starring UID {} from {} - {}", msg.uid, sender, msg.subject);
             set_label(client, msg.uid, "\\Starred", &msg.subject)?;
         }
         FilterAction::Flag => {
-            info!("🚩 Flagging UID {}", msg.uid);
+            info!("🚩 Flagging UID {} from {} - {}", msg.uid, sender, msg.subject);
             set_label(client, msg.uid, "\\Important", &msg.subject)?;
         }
         FilterAction::Move(label) => {
-            info!("➡️ Moving UID {} → {}", msg.uid, label);
+            info!(
+                "➡️ Moving UID {} from {} → {} - {}",
+                msg.uid, sender, label, msg.subject
+            );
             uid_move_gmail(client, msg.uid, label, &msg.subject)?;
         }
     }
@@ -41,13 +44,17 @@ pub fn apply_state_action(
     msg: &Message,
     action: &StateAction,
 ) -> Result<()> {
+    let sender = msg.sender_display();
     match action {
         StateAction::Delete => {
-            info!("🗑 Deleting UID {}", msg.uid);
+            info!("🗑 Deleting UID {} from {} - {}", msg.uid, sender, msg.subject);
             client.uid_store(msg.uid.to_string(), "+FLAGS (\\Deleted)")?;
         }
         StateAction::Move(label) => {
-            info!("➡️ Moving UID {} → {}", msg.uid, label);
+            info!(
+                "➡️ Moving UID {} from {} → {} - {}",
+                msg.uid, sender, label, msg.subject
+            );
             uid_move_gmail(client, msg.uid, label, &msg.subject)?;
         }
     }
@@ -98,9 +105,6 @@ impl IMAPFilter {
             .fetch(&seq_set, "(UID FLAGS INTERNALDATE X-GM-THRID RFC822.HEADER)")?;
         debug!("FETCH returned {} records", fetches.len());
 
-        // 5) Build a map of thread IDs to messages for later processing
-        let mut thread_map: HashMap<String, Vec<Message>> = HashMap::new();
-
         let mut out = Vec::with_capacity(fetches.len());
         for fetch in fetches.iter() {
             let uid = fetch.uid.unwrap_or(0);
@@ -111,7 +115,6 @@ impl IMAPFilter {
             let raw_header = fetch.header().unwrap_or(&[]).to_vec();
             // DEBUG: dump raw headers for diagnostics
             let header_text = String::from_utf8_lossy(&raw_header).into_owned();
-            //debug!("Raw header for UID {}:\n{}", uid, header_text);
 
             // convert internal date
             let date_str = fetch.internal_date().map(|dt| dt.to_rfc3339()).unwrap_or_default();
@@ -139,11 +142,6 @@ impl IMAPFilter {
                 uid
             );
 
-            // Group messages by thread ID if available
-            if let Some(thread_id) = &msg.thread_id {
-                thread_map.entry(thread_id.clone()).or_default().push(msg.clone());
-            }
-
             out.push(msg);
         }
 
@@ -161,16 +159,8 @@ impl IMAPFilter {
             debug!("message: {:#?}", message);
         }
 
-        // Create thread map from messages
-        let thread_map: HashMap<String, Vec<Message>> = messages
-            .iter()
-            .filter_map(|msg| msg.thread_id.as_ref().map(|tid| (tid.clone(), msg.clone())))
-            .fold(HashMap::new(), |mut map, (tid, msg)| {
-                map.entry(tid).or_default().push(msg);
-                map
-            });
-
-        let thread_processor = ThreadProcessor::new(thread_map);
+        // Create thread processor (builds thread map using Gmail X-GM-THRID or standard headers)
+        let thread_processor = ThreadProcessor::new(&messages);
         self.process_message_filters_with_threads(&mut messages, &thread_processor)?;
         self.process_state_filters_with_threads(&mut messages, &thread_processor)?;
 

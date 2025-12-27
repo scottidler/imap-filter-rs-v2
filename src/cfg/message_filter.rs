@@ -6,6 +6,7 @@ use globset::Glob;
 use serde::de::{self, Deserializer};
 use serde::Deserialize;
 use serde_yaml::{from_value, Value};
+use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Clone, Deserialize)]
 pub struct AddressFilter {
@@ -51,6 +52,11 @@ pub struct MessageFilter {
     #[serde(alias = "label")]
     #[serde(deserialize_with = "deserialize_labels_filter")]
     pub labels: LabelsFilter,
+
+    /// Custom header matching: header name -> glob patterns
+    /// Example: { "List-Id": ["*github*"], "X-Priority": ["1"] }
+    #[serde(default)]
+    pub headers: HashMap<String, Vec<String>>,
 
     #[serde(default)]
     #[serde(alias = "action")]
@@ -134,6 +140,27 @@ impl MessageFilter {
         }
         if !self.labels.excluded.is_empty() && msg.labels.iter().any(|l| self.labels.excluded.contains(l)) {
             return false;
+        }
+
+        // HEADERS: custom header matching
+        for (header_name, patterns) in &self.headers {
+            if let Some(header_value) = msg.headers.get(header_name) {
+                // At least one pattern must match the header value
+                let mut matched = false;
+                for pat in patterns {
+                    let matcher = Glob::new(pat).expect("invalid glob").compile_matcher();
+                    if matcher.is_match(header_value) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    return false;
+                }
+            } else {
+                // Header not present, patterns don't match
+                return false;
+            }
         }
 
         true
@@ -333,6 +360,7 @@ mod tests {
             from: None,
             subject: vec![],
             labels: LabelsFilter::default(),
+            headers: HashMap::new(),
             actions: vec![FilterAction::Star],
         };
 
@@ -352,6 +380,7 @@ mod tests {
             from: None,
             subject: vec![],
             labels: LabelsFilter::default(),
+            headers: HashMap::new(),
             actions: vec![FilterAction::Star],
         };
 
@@ -380,6 +409,7 @@ mod tests {
             }),
             subject: vec![],
             labels: LabelsFilter::default(),
+            headers: HashMap::new(),
             actions: vec![FilterAction::Star],
         };
 
@@ -399,6 +429,7 @@ mod tests {
             from: None,
             subject: vec!["*urgent*".to_string()],
             labels: LabelsFilter::default(),
+            headers: HashMap::new(),
             actions: vec![FilterAction::Star],
         };
 
@@ -428,6 +459,7 @@ mod tests {
             }),
             subject: vec![],
             labels: LabelsFilter::default(),
+            headers: HashMap::new(),
             actions: vec![FilterAction::Star],
         };
 
@@ -447,5 +479,88 @@ mod tests {
         // Should NOT match: wrong sender
         let wrong_from = make_test_message(vec!["me@example.com"], vec![], "spam@other.com", "Spam");
         assert!(!filter.matches(&wrong_from));
+    }
+
+    #[test]
+    fn test_message_filter_matches_custom_header() {
+        // Create a filter that requires List-Id header with github pattern
+        let mut header_patterns = HashMap::new();
+        header_patterns.insert("List-Id".to_string(), vec!["*github*".to_string()]);
+
+        let filter = MessageFilter {
+            name: "github-lists".to_string(),
+            to: None,
+            cc: None,
+            from: None,
+            subject: vec![],
+            labels: LabelsFilter::default(),
+            headers: header_patterns,
+            actions: vec![FilterAction::Move("GitHub".to_string())],
+        };
+
+        // Create a message with List-Id header
+        let headers = b"From: noreply@github.com\r\n\
+                        To: user@example.com\r\n\
+                        Subject: [repo] Issue opened\r\n\
+                        List-Id: <repo.github.com>\r\n\
+                        \r\n"
+            .to_vec();
+        let msg = Message::new(1, 1, headers, vec![], "2024-01-01T00:00:00+00:00".to_string(), None);
+        assert!(filter.matches(&msg));
+
+        // Message without List-Id should NOT match
+        let no_list_id = make_test_message(vec!["user@example.com"], vec![], "noreply@github.com", "Issue");
+        assert!(!filter.matches(&no_list_id));
+    }
+
+    #[test]
+    fn test_message_filter_header_must_match_pattern() {
+        let mut header_patterns = HashMap::new();
+        header_patterns.insert("X-Priority".to_string(), vec!["1".to_string()]);
+
+        let filter = MessageFilter {
+            name: "high-priority".to_string(),
+            to: None,
+            cc: None,
+            from: None,
+            subject: vec![],
+            labels: LabelsFilter::default(),
+            headers: header_patterns,
+            actions: vec![FilterAction::Flag],
+        };
+
+        // High priority message
+        let high_priority = b"From: boss@company.com\r\n\
+                              To: me@example.com\r\n\
+                              Subject: Urgent\r\n\
+                              X-Priority: 1\r\n\
+                              \r\n"
+            .to_vec();
+        let msg = Message::new(
+            1,
+            1,
+            high_priority,
+            vec![],
+            "2024-01-01T00:00:00+00:00".to_string(),
+            None,
+        );
+        assert!(filter.matches(&msg));
+
+        // Low priority message should NOT match
+        let low_priority = b"From: newsletter@spam.com\r\n\
+                             To: me@example.com\r\n\
+                             Subject: Newsletter\r\n\
+                             X-Priority: 5\r\n\
+                             \r\n"
+            .to_vec();
+        let msg2 = Message::new(
+            2,
+            2,
+            low_priority,
+            vec![],
+            "2024-01-01T00:00:00+00:00".to_string(),
+            None,
+        );
+        assert!(!filter.matches(&msg2));
     }
 }

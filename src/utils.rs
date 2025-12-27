@@ -20,62 +20,6 @@ pub fn parse_days(s: &str) -> Result<Duration> {
     }
 }
 
-/// Validates that an IMAP search query uses supported flags and syntax.
-#[allow(dead_code)] // Will be used when query validation is added to config loading
-pub fn validate_imap_query(query: &str) -> Result<()> {
-    let valid_tokens = [
-        "ALL",
-        "ANSWERED",
-        "DELETED",
-        "DRAFT",
-        "FLAGGED",
-        "NEW",
-        "OLD",
-        "RECENT",
-        "SEEN",
-        "UNANSWERED",
-        "UNDELETED",
-        "UNDRAFT",
-        "UNFLAGGED",
-        "UNSEEN",
-        "X-GM-LABELS",
-        "X-GM-RAW",
-        "X-GM-THRID",
-        "X-GM-MSGID",
-        "INBOX", // treated specially by some servers
-        "NOT",
-        "OR",
-        "AND",
-    ];
-
-    if query.trim().is_empty() {
-        return Err(eyre!("IMAP query must not be empty"));
-    }
-
-    if query.contains('\\') {
-        // allow known escaped flags
-        let known = ["\\Seen", "\\Deleted", "\\Flagged", "\\Draft", "\\Answered"];
-        if !known.iter().any(|&f| query.contains(f)) {
-            return Err(eyre!("Unknown or improperly escaped IMAP flag in query: {}", query));
-        }
-    }
-
-    for token in query.split_whitespace() {
-        let t = token.trim_matches(|c| c == '(' || c == ')' || c == '"');
-        if t.starts_with("X-GM-LABELS")
-            || valid_tokens.iter().any(|&v| v.eq_ignore_ascii_case(t))
-            || t.starts_with('\\')
-            || t.chars().all(char::is_alphanumeric)
-        {
-            continue;
-        } else {
-            return Err(eyre!("Unsupported or malformed token in IMAP query: '{}'", token));
-        }
-    }
-
-    Ok(())
-}
-
 /// Ensures the given label exists on the server, creating it if necessary.
 pub fn ensure_label_exists<T>(client: &mut Session<T>, label: &str) -> Result<()>
 where
@@ -199,23 +143,6 @@ mod tests {
         assert!(parse_days("7h").is_err()); // wrong suffix
         assert!(parse_days("").is_err()); // empty
         assert!(parse_days("abc").is_err()); // not a number
-    }
-
-    #[test]
-    fn test_validate_imap_query_valid() {
-        assert!(validate_imap_query("ALL").is_ok());
-        assert!(validate_imap_query("SEEN").is_ok());
-        assert!(validate_imap_query("NOT SEEN").is_ok());
-        assert!(validate_imap_query("\\Seen").is_ok());
-        assert!(validate_imap_query("\\Flagged").is_ok());
-        assert!(validate_imap_query("X-GM-LABELS test").is_ok());
-    }
-
-    #[test]
-    fn test_validate_imap_query_invalid() {
-        assert!(validate_imap_query("").is_err()); // empty
-        assert!(validate_imap_query("   ").is_err()); // whitespace only
-        assert!(validate_imap_query("\\Unknown").is_err()); // unknown escaped flag
     }
 
     #[test]
