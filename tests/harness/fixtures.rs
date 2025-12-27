@@ -102,8 +102,6 @@ impl FixtureLoader {
     }
 
     /// Get the base path for fixtures.
-    // TEMPORARY: Will be used in Phase 2+ for scenario loading
-    #[allow(dead_code)]
     pub fn base_path(&self) -> &PathBuf {
         &self.base_path
     }

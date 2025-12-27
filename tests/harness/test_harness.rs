@@ -16,8 +16,6 @@ pub struct TestHarness {
     pub mailbox: Arc<RwLock<VirtualMailbox>>,
     pub clock: VirtualClock,
     pub client: MockIMAPClient,
-    // TEMPORARY: loader will be used in Phase 4+ for fixture-based tests
-    #[allow(dead_code)]
     loader: FixtureLoader,
 }
 
@@ -67,22 +65,18 @@ impl TestHarness {
         self.mailbox.write().unwrap().add_message(message)
     }
 
-    // TEMPORARY: These fixture methods will be used in Phase 4+ for fixture-based integration tests
-    #[allow(dead_code)]
     /// Load a fixture email and add it to the mailbox.
     pub fn add_fixture(&mut self, fixture_path: &str) -> Result<u32, String> {
         let fixture = self.loader.load_email(fixture_path).map_err(|e| e.to_string())?;
         Ok(self.add_message(fixture.message))
     }
 
-    #[allow(dead_code)]
     /// Load a fixture with specific labels.
     pub fn add_fixture_with_labels(&mut self, fixture_path: &str, labels: &[&str]) -> Result<u32, String> {
         let fixture = self.loader.load_email(fixture_path).map_err(|e| e.to_string())?;
         Ok(self.add_message_with_labels(fixture.message, labels))
     }
 
-    #[allow(dead_code)]
     /// Load a fixture with a specific internal date (days ago from current virtual time).
     pub fn add_fixture_dated(&mut self, fixture_path: &str, labels: &[&str], days_ago: i64) -> Result<u32, String> {
         let mut fixture = self.loader.load_email(fixture_path).map_err(|e| e.to_string())?;
@@ -94,7 +88,6 @@ impl TestHarness {
         Ok(self.add_message_with_labels(fixture.message, labels))
     }
 
-    #[allow(dead_code)]
     /// Load all fixtures from a directory.
     pub fn load_fixtures_from_directory(&mut self, dir_path: &str) -> Result<Vec<EmailFixture>, String> {
         self.loader.load_directory(dir_path).map_err(|e| e.to_string())
@@ -107,8 +100,6 @@ impl TestHarness {
         self.clock.advance_days(days);
     }
 
-    // TEMPORARY: Will be used in Phase 4+ for more granular time control tests
-    #[allow(dead_code)]
     /// Advance virtual time by the given duration.
     pub fn advance(&self, duration: chrono::Duration) {
         self.clock.advance(duration);
@@ -163,8 +154,6 @@ impl TestHarness {
         self.mailbox.read().unwrap().message_count()
     }
 
-    // TEMPORARY: Will be used in Phase 4+ for label existence assertions
-    #[allow(dead_code)]
     /// Check if a label exists.
     pub fn label_exists(&self, label: &str) -> bool {
         self.mailbox.read().unwrap().label_exists(label)
@@ -177,8 +166,6 @@ impl TestHarness {
 
     // ===== Assertion Helpers =====
 
-    // TEMPORARY: Will be used in Phase 4+ for specific action assertions
-    #[allow(dead_code)]
     /// Assert that a specific action was recorded.
     pub fn assert_action(&self, expected: &RecordedAction) {
         let actions = self.actions();

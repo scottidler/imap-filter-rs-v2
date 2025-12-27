@@ -14,7 +14,6 @@ pub struct EmailAddress {
 #[derive(Debug, Clone)]
 pub struct Message {
     pub uid: u32,
-    #[allow(dead_code)] // IMAP sequence number for batch operations
     pub seq: u32,
     pub to: Vec<EmailAddress>,
     pub cc: Vec<EmailAddress>,

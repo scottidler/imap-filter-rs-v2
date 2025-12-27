@@ -14,8 +14,6 @@ pub struct MailboxMessage {
     pub cc: Vec<String>,
     pub from: Vec<String>,
     pub subject: String,
-    // TEMPORARY: Will be used in Phase 2+ for TTL evaluation
-    #[allow(dead_code)]
     pub date: String,
     pub labels: HashSet<String>,
     pub flags: HashSet<String>,
@@ -147,8 +145,6 @@ impl VirtualMailbox {
     }
 
     /// Get a mutable reference to a message by UID.
-    // TEMPORARY: Will be used in Phase 2+ for message modification in tests
-    #[allow(dead_code)]
     pub fn get_message_mut(&mut self, uid: u32) -> Option<&mut MailboxMessage> {
         self.messages.get_mut(&uid)
     }
@@ -255,8 +251,6 @@ impl VirtualMailbox {
     }
 
     /// Clear the move history.
-    // TEMPORARY: Will be used in Phase 2+ for multi-step test scenarios
-    #[allow(dead_code)]
     pub fn clear_move_history(&mut self) {
         self.moves.clear();
     }

@@ -17,9 +17,7 @@ pub struct OAuth2Credentials {
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
-    #[allow(dead_code)]
     expires_in: u64,
-    #[allow(dead_code)]
     token_type: String,
 }
 
@@ -42,8 +40,8 @@ impl OAuth2Credentials {
             .map_err(|e| eyre!("Failed to parse token response: {}", e))?;
 
         debug!(
-            "Got new access token (expires in {} seconds)",
-            token_response.expires_in
+            "Got new {} access token (expires in {} seconds)",
+            token_response.token_type, token_response.expires_in
         );
 
         Ok(token_response.access_token)

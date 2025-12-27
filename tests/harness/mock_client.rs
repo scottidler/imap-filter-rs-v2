@@ -120,8 +120,6 @@ impl MockIMAPClient {
     }
 
     /// Get a specific message by UID.
-    // TEMPORARY: Will be used in Phase 3+ for message inspection in integration tests
-    #[allow(dead_code)]
     pub fn get_message(&self, uid: u32) -> Option<MailboxMessage> {
         let mailbox = self.mailbox.read().unwrap();
         mailbox.get_message(uid).cloned()
@@ -233,8 +231,6 @@ impl MockIMAPClient {
     }
 
     /// Simulate logout (no-op for mock).
-    // TEMPORARY: Will be used in Phase 3+ when full filter execution is tested
-    #[allow(dead_code)]
     pub fn logout(&mut self) -> Result<(), String> {
         Ok(())
     }

@@ -132,6 +132,10 @@ impl IMAPFilter {
 
             // build Message
             let msg = Message::new(uid, seq, raw_header, raw_labels, date_str, thread_id);
+            debug!(
+                "Created message: uid={}, seq={}, subject={}",
+                msg.uid, msg.seq, msg.subject
+            );
 
             if msg.from.is_empty() && msg.to.is_empty() && msg.cc.is_empty() {
                 error!("UID {} address fields empty. Header was:\n{}", uid, header_text);
