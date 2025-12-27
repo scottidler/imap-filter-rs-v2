@@ -319,4 +319,72 @@ mod harness_tests {
         assert!(!final_msg.labels.contains("Purgatory"));
         assert!(!final_msg.labels.contains("INBOX"));
     }
+
+    // ===== Fixture Loading Tests =====
+
+    #[test]
+    fn test_load_direct_message_fixture() {
+        let loader = FixtureLoader::new();
+        let fixture = loader.load_email("simple/direct-message.eml").unwrap();
+
+        assert_eq!(fixture.message.subject, "Direct message to you");
+        assert!(fixture.message.from.contains(&"sender@company.com".to_string()));
+        assert!(fixture.message.to.contains(&"me@example.com".to_string()));
+        assert!(fixture.message.cc.is_empty());
+        assert!(fixture
+            .message
+            .message_id
+            .as_ref()
+            .unwrap()
+            .contains("direct-001@company.com"));
+    }
+
+    #[test]
+    fn test_load_with_cc_fixture() {
+        let loader = FixtureLoader::new();
+        let fixture = loader.load_email("simple/with-cc.eml").unwrap();
+
+        assert_eq!(fixture.message.subject, "Team update with CC");
+        assert!(!fixture.message.cc.is_empty());
+        assert!(fixture.message.cc.contains(&"colleague@company.com".to_string()));
+        assert!(fixture.message.cc.contains(&"manager@company.com".to_string()));
+    }
+
+    #[test]
+    fn test_load_mailing_list_fixture() {
+        let loader = FixtureLoader::new();
+        let fixture = loader.load_email("simple/mailing-list.eml").unwrap();
+
+        assert_eq!(fixture.message.subject, "[repo/project] New issue opened");
+        assert!(fixture.message.from.contains(&"noreply@github.com".to_string()));
+    }
+
+    #[test]
+    fn test_load_thread_fixtures() {
+        let loader = FixtureLoader::new();
+        let fixtures = loader.load_directory("threads/thread-01").unwrap();
+
+        assert_eq!(fixtures.len(), 3);
+
+        // Verify thread headers are present
+        let initial = fixtures.iter().find(|f| f.message.subject == "Project discussion");
+        assert!(initial.is_some());
+
+        let reply = fixtures.iter().find(|f| f.message.subject == "Re: Project discussion");
+        assert!(reply.is_some());
+        assert!(reply.unwrap().message.in_reply_to.is_some());
+    }
+
+    #[test]
+    fn test_harness_with_fixture() {
+        let mut harness = TestHarness::new();
+
+        // Load and add fixture
+        let uid = harness.add_fixture("simple/direct-message.eml").unwrap();
+
+        // Verify it was added
+        let msg = harness.get_message(uid);
+        assert!(msg.is_some());
+        assert_eq!(msg.unwrap().subject, "Direct message to you");
+    }
 }

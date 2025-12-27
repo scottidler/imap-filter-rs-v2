@@ -1,0 +1,9 @@
+From: sender@example.com
+To: me@example.com
+Subject: Regular email for purgatory test
+Date: Mon, 1 Jan 2024 10:00:00 +0000
+Message-ID: <purgatory-test-001@example.com>
+Content-Type: text/plain; charset="utf-8"
+
+This is a regular email that will go through the purgatory flow.
+

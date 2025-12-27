@@ -1,0 +1,59 @@
+# Purgatory Flow Scenario
+# Tests the complete lifecycle of an email through the purgatory workflow
+
+name: purgatory-flow
+description: |
+  Test the complete lifecycle of an email through the purgatory workflow:
+  1. Email arrives in INBOX
+  2. Email ages past read TTL (7d)
+  3. Email moves to Purgatory
+  4. Email ages past purgatory TTL (3d)
+  5. Email moves to Oblivion
+
+config: ../configs/state-transitions.yml
+
+steps:
+  - name: initial_state
+    description: "Email arrives fresh in INBOX"
+    load_emails:
+      - path: ../../emails/simple/direct-message.eml
+        labels: [INBOX, Seen]
+        internal_date: now
+    assert:
+      - type: message_count
+        label: INBOX
+        count: 1
+      - type: message_count
+        label: Purgatory
+        count: 0
+
+  - name: after_7_days
+    description: "Email has aged past read TTL"
+    advance_time: 8d
+    run_filters: state
+    assert:
+      - type: message_count
+        label: INBOX
+        count: 0
+      - type: message_count
+        label: Purgatory
+        count: 1
+      - type: action_recorded
+        action: Move
+        to: Purgatory
+
+  - name: after_10_days
+    description: "Email in Purgatory for 3+ days"
+    advance_time: 3d
+    run_filters: state
+    assert:
+      - type: message_count
+        label: Purgatory
+        count: 0
+      - type: message_count
+        label: Oblivion
+        count: 1
+      - type: action_recorded
+        action: Move
+        to: Oblivion
+

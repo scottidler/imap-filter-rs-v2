@@ -1,0 +1,11 @@
+From: alice@company.com
+To: bob@company.com
+Subject: Re: Project discussion
+Date: Mon, 1 Jan 2024 12:00:00 +0000
+Message-ID: <thread1-msg3@company.com>
+In-Reply-To: <thread1-msg2@company.com>
+References: <thread1-msg1@company.com> <thread1-msg2@company.com>
+Content-Type: text/plain; charset="utf-8"
+
+Next week works for me. Let's do Tuesday at 2pm.
+

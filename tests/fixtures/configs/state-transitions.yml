@@ -1,0 +1,30 @@
+# Test configuration for state filter TTL transitions
+# Used by integration tests to verify email aging and movement
+
+message-filters: []
+
+state-filters:
+  # Starred emails are protected forever
+  - Starred:
+      labels: [Important, Starred]
+      ttl: Keep
+
+  # Important (but not Starred) emails are also protected
+  - Important:
+      label: Important
+      ttl: Keep
+
+  # Regular emails age out based on read/unread status
+  - Cull:
+      ttl:
+        read: 7d
+        unread: 21d
+      action: Purgatory
+
+  # Purgatory emails get deleted after 3 days
+  - Purge:
+      label: Purgatory
+      ttl: 3d
+      action:
+        Move: Oblivion
+

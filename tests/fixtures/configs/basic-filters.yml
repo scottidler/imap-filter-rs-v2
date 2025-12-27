@@ -1,0 +1,32 @@
+# Test configuration for basic message filters
+# Used by integration tests to verify filter matching logic
+
+message-filters:
+  # Star emails sent directly to me with no CC
+  - only-to-me-star:
+      to: ['me@example.com']
+      cc: []
+      label: INBOX
+      action: Star
+
+  # Flag emails from boss
+  - from-boss:
+      from: '*@company.com'
+      to: ['me@example.com']
+      label: INBOX
+      action: Flag
+
+  # Move mailing list emails to a folder
+  - mailing-lists:
+      headers:
+        List-Id: '*'
+      label: INBOX
+      action:
+        Move: Lists
+
+state-filters:
+  # No TTL-based state filters for basic tests
+  - Starred:
+      label: Starred
+      ttl: Keep
+

@@ -1,0 +1,19 @@
+# Test configuration for thread protection tests
+# Used to verify that starred messages protect entire threads
+
+message-filters: []
+
+state-filters:
+  # Starred emails (and their threads) are protected
+  - Starred:
+      label: Starred
+      ttl: Keep
+
+  # Regular INBOX emails age out after 7 days (read)
+  - Cull:
+      label: INBOX
+      ttl:
+        read: 7d
+        unread: 21d
+      action: Purgatory
+

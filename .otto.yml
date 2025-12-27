@@ -26,13 +26,19 @@ tasks:
       echo ""
       echo "✅ All checks passed!"
 
-  # Run tests
+  # Run tests (excludes harness/integration tests)
   test:
-    help: "Run all tests"
+    help: "Run unit tests (lib + bin, excludes harness)"
     bash: |
-      cargo test --all-features
+      cargo test --lib --bins --all-features
 
-  # Code coverage with llvm-cov
+  # Run harness/integration tests
+  harness:
+    help: "Run harness integration tests"
+    bash: |
+      cargo test --test integration --all-features
+
+  # Code coverage with llvm-cov (excludes harness)
   cov:
     help: "Run tests with coverage via llvm-cov (use --fail-under N for threshold)"
     params:
@@ -42,7 +48,7 @@ tasks:
     bash: |
       echo "🧪 Running tests with coverage..."
       if [ "${fail_under}" != "0" ]; then
-        if cargo llvm-cov --all-features --html -q --fail-under-lines "${fail_under}"; then
+        if cargo llvm-cov --lib --bins --all-features --html -q --fail-under-lines "${fail_under}"; then
           echo ""
           echo "✅ Coverage meets ${fail_under}% threshold"
           echo "📊 Coverage report: target/llvm-cov/html/index.html"
@@ -53,7 +59,7 @@ tasks:
           exit 1
         fi
       else
-        cargo llvm-cov --all-features --html -q
+        cargo llvm-cov --lib --bins --all-features --html -q
         echo ""
         echo "✅ Coverage report: target/llvm-cov/html/index.html"
       fi
