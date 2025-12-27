@@ -6,11 +6,11 @@
 mod harness;
 
 // Re-export for use in other test files
-// TEMPORARY: Some imports will be used in Phase 3+ when full integration tests are added
+// TEMPORARY: Some imports may not be used until Phase 4+
 #[allow(unused_imports)]
 use harness::{
-    Clock, EmailFixture, FixtureLoader, MailboxMessage, MockIMAPClient, MoveRecord, RealClock, RecordedAction,
-    VirtualClock, VirtualMailbox,
+    Clock, EmailFixture, FixtureError, FixtureLoader, MailboxMessage, MockIMAPClient, MoveRecord, RealClock,
+    RecordedAction, TestHarness, VirtualClock, VirtualMailbox,
 };
 
 #[cfg(test)]
