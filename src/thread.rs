@@ -1,9 +1,7 @@
 use eyre::Result;
-use imap::Session;
+use imap::{ImapConnection, Session};
 use log::debug;
-use native_tls::TlsStream;
 use std::collections::{HashMap, HashSet};
-use std::net::TcpStream;
 
 use crate::cfg::message_filter::FilterAction;
 use crate::cfg::state_filter::{StateAction, StateFilter};
@@ -127,37 +125,62 @@ pub fn build_thread_map(messages: &[Message]) -> HashMap<String, Vec<Message>> {
 
 pub struct ThreadProcessor {
     thread_map: HashMap<String, Vec<Message>>,
+    // Reverse lookup: UID -> thread_id for O(1) lookup
+    uid_to_thread: HashMap<u32, String>,
 }
 
 impl ThreadProcessor {
     pub fn new(messages: &[Message]) -> Self {
+        use log::info;
+        use std::time::Instant;
+
+        info!(
+            "[ThreadProcessor] Building thread map from {} messages...",
+            messages.len()
+        );
+        let start = Instant::now();
+
         let thread_map = build_thread_map(messages);
-        Self { thread_map }
+
+        // Build reverse lookup for O(1) thread ID lookup by UID
+        let mut uid_to_thread: HashMap<u32, String> = HashMap::new();
+        for (thread_id, msgs) in &thread_map {
+            for msg in msgs {
+                uid_to_thread.insert(msg.uid, thread_id.clone());
+            }
+        }
+
+        let elapsed = start.elapsed();
+        info!(
+            "[ThreadProcessor] Built {} threads, {} uid mappings in {:?}",
+            thread_map.len(),
+            uid_to_thread.len(),
+            elapsed
+        );
+
+        Self {
+            thread_map,
+            uid_to_thread,
+        }
     }
 
     /// Get the thread ID for a message, if it's part of a thread
     pub fn get_thread_id(&self, msg: &Message) -> Option<String> {
-        // First check Gmail thread ID
+        // First check Gmail thread ID (fast path)
         if let Some(tid) = &msg.thread_id {
             if self.thread_map.contains_key(tid) {
                 return Some(tid.clone());
             }
         }
 
-        // Check standard thread ID (computed from Message-ID)
-        for (thread_id, msgs) in &self.thread_map {
-            if msgs.iter().any(|m| m.uid == msg.uid) {
-                return Some(thread_id.clone());
-            }
-        }
-
-        None
+        // Use O(1) reverse lookup instead of O(n) search
+        self.uid_to_thread.get(&msg.uid).cloned()
     }
 
     /// Processes a message filter action across an entire thread
-    pub fn process_thread_message_filter(
+    pub fn process_thread_message_filter<C: ImapConnection>(
         &self,
-        client: &mut Session<TlsStream<TcpStream>>,
+        client: &mut Session<C>,
         msg: &Message,
         action: &FilterAction,
     ) -> Result<Vec<Message>> {
@@ -185,9 +208,9 @@ impl ThreadProcessor {
     /// Processes a state filter action across an entire thread.
     /// TTL is evaluated based on the NEWEST message in the thread.
     /// The thread only expires when the newest message has exceeded TTL.
-    pub fn process_thread_state_filter(
+    pub fn process_thread_state_filter<Conn: ImapConnection>(
         &self,
-        client: &mut Session<TlsStream<TcpStream>>,
+        client: &mut Session<Conn>,
         msg: &Message,
         filter: &StateFilter,
         action: &StateAction,
@@ -198,51 +221,75 @@ impl ThreadProcessor {
     /// Processes a state filter action across an entire thread with a custom clock.
     /// TTL is evaluated based on the NEWEST message in the thread.
     /// The thread only expires when the newest message has exceeded TTL.
-    pub fn process_thread_state_filter_with_clock<C: Clock>(
+    pub fn process_thread_state_filter_with_clock<Conn: ImapConnection, Clk: Clock>(
         &self,
-        client: &mut Session<TlsStream<TcpStream>>,
+        client: &mut Session<Conn>,
         msg: &Message,
         filter: &StateFilter,
         action: &StateAction,
-        clock: &C,
+        clock: &Clk,
     ) -> Result<Vec<Message>> {
         let mut processed = Vec::new();
 
+        debug!("    [thread] Looking up thread for UID {}", msg.uid);
+
         // Find the thread this message belongs to
         if let Some(thread_id) = self.get_thread_id(msg) {
+            debug!("    [thread] Found thread_id: {}", thread_id);
+
             if let Some(thread_msgs) = self.thread_map.get(&thread_id) {
+                debug!("    [thread] Thread has {} messages", thread_msgs.len());
+
                 // Find newest message in thread (by date)
                 let newest_msg = thread_msgs.iter().max_by_key(|m| m.date.clone()).unwrap_or(msg);
+                debug!(
+                    "    [thread] Newest msg in thread: UID {} dated {}",
+                    newest_msg.uid, newest_msg.date
+                );
 
                 // Evaluate TTL based on the newest message only
                 // If the newest message has expired, the whole thread expires
-                let thread_expired = filter
-                    .evaluate_ttl(newest_msg, clock)
-                    .map(|opt| opt.is_some())
-                    .unwrap_or(false);
+                debug!("    [thread] Evaluating TTL for filter '{}'", filter.name);
+                let ttl_result = filter.evaluate_ttl(newest_msg, clock);
+                debug!("    [thread] TTL result: {:?}", ttl_result);
+
+                let thread_expired = ttl_result.map(|opt| opt.is_some()).unwrap_or(false);
 
                 if thread_expired {
                     debug!(
-                        "Thread {} expired (newest msg UID {} from {} dated {})",
+                        "    [thread] Thread {} EXPIRED (newest msg UID {} from {} dated {})",
                         thread_id,
                         newest_msg.uid,
                         newest_msg.sender_display(),
                         newest_msg.date
                     );
                     for thread_msg in thread_msgs {
+                        debug!("    [thread] Applying action to UID {}", thread_msg.uid);
                         crate::imap_filter::apply_state_action(client, thread_msg, action)?;
                         processed.push(thread_msg.clone());
                     }
+                } else {
+                    debug!("    [thread] Thread NOT expired yet");
                 }
+            } else {
+                debug!("    [thread] No messages found in thread_map for thread_id");
             }
         } else {
+            debug!("    [thread] No thread found, evaluating single message");
             // Not part of a thread, evaluate normally
-            if let Ok(Some(_)) = filter.evaluate_ttl(msg, clock) {
+            let ttl_result = filter.evaluate_ttl(msg, clock);
+            debug!("    [thread] Single msg TTL result: {:?}", ttl_result);
+
+            if let Ok(Some(_)) = ttl_result {
+                debug!("    [thread] Single msg EXPIRED, applying action");
                 crate::imap_filter::apply_state_action(client, msg, action)?;
                 processed.push(msg.clone());
+            } else {
+                debug!("    [thread] Single msg NOT expired");
             }
         }
 
+        debug!("    [thread] Returning {} processed messages", processed.len());
         Ok(processed)
     }
 }

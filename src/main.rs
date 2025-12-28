@@ -4,7 +4,6 @@ use clap::Parser;
 use env_logger::Builder;
 use eyre::{eyre, Result};
 use log::{debug, error, info};
-use native_tls::TlsConnector;
 use std::fs::OpenOptions;
 use std::io::Write;
 
@@ -75,9 +74,9 @@ fn main() -> Result<()> {
 
     debug!("Using IMAP server: {}  user: {}", imap_domain, imap_username);
 
-    // 3) Connect & authenticate
-    let tls = TlsConnector::builder().build()?;
-    let client_conn = imap::connect((imap_domain.as_str(), 993), imap_domain.as_str(), &tls)
+    // 3) Connect & authenticate (v3 API uses ClientBuilder)
+    let client_conn = imap::ClientBuilder::new(&imap_domain, 993)
+        .connect()
         .map_err(|e| eyre!("Failed to connect to {}: {}", imap_domain, e))?;
 
     let mut client = if use_oauth2 {

@@ -26,12 +26,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Gmail Thread ID (X-GM-THRID) Proof of Concept ===\n");
     println!("Connecting to {}...", domain);
 
-    // Connect with TLS
-    let tls = native_tls::TlsConnector::builder().build()?;
-    let client = imap::connect((domain.as_str(), 993), &domain, &tls)?;
+    // Connect with TLS (v3 API)
+    let client = imap::ClientBuilder::new(&domain, 993).connect()?;
 
     // Login
-    let mut session = client.login(&username, &password).map_err(|(e, _)| e)?;
+    let mut session = client.login(&username, &password).map_err(|e| e.0)?;
 
     println!("✅ Logged in as {}", username);
 

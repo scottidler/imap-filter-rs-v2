@@ -127,6 +127,8 @@ impl StateFilter {
     ///
     /// Accepts a clock parameter to allow testing with virtual time.
     pub fn evaluate_ttl<C: Clock>(&self, msg: &Message, clock: &C) -> eyre::Result<Option<StateAction>> {
+        use log::debug;
+
         let now = clock.now();
         // parse the stored RFC3339 date back into a chrono DateTime
         let internal: DateTime<Utc> = DateTime::parse_from_rfc3339(&msg.date)
@@ -134,26 +136,50 @@ impl StateFilter {
             .with_timezone(&Utc);
 
         let age = now.signed_duration_since(internal);
+        debug!(
+            "      [ttl] UID {} age={} days ({} hours)",
+            msg.uid,
+            age.num_days(),
+            age.num_hours()
+        );
 
         // Check if message is read (has \Seen flag)
         let is_read = msg
             .labels
             .iter()
             .any(|l| matches!(l, Label::Custom(s) if s == "Seen" || s == "\\Seen"));
+        debug!("      [ttl] is_read={}", is_read);
 
         let ttl_duration = match &self.ttl {
-            Ttl::Keep => return Ok(None),
-            Ttl::Days(dur) => *dur,
+            Ttl::Keep => {
+                debug!("      [ttl] TTL=Keep, returning None");
+                return Ok(None);
+            }
+            Ttl::Days(dur) => {
+                debug!("      [ttl] TTL=Days({} days)", dur.num_days());
+                *dur
+            }
             Ttl::Detailed { read, unread } => {
-                if is_read {
-                    *read
-                } else {
-                    *unread
-                }
+                let dur = if is_read { *read } else { *unread };
+                debug!(
+                    "      [ttl] TTL=Detailed(read={}, unread={}), using {} days",
+                    read.num_days(),
+                    unread.num_days(),
+                    dur.num_days()
+                );
+                dur
             }
         };
 
-        if age >= ttl_duration {
+        let expired = age >= ttl_duration;
+        debug!(
+            "      [ttl] age={} days vs ttl={} days → expired={}",
+            age.num_days(),
+            ttl_duration.num_days(),
+            expired
+        );
+
+        if expired {
             Ok(Some(self.action.clone()))
         } else {
             Ok(None)

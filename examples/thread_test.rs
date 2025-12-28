@@ -17,9 +17,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Thread Grouping Test (Standard Headers) ===\n");
     println!("Connecting to {}...", domain);
 
-    let tls = native_tls::TlsConnector::builder().build()?;
-    let client = imap::connect((domain.as_str(), 993), &domain, &tls)?;
-    let mut session = client.login(&username, &password).map_err(|(e, _)| e)?;
+    let client = imap::ClientBuilder::new(&domain, 993).connect()?;
+    let mut session = client.login(&username, &password).map_err(|e| e.0)?;
 
     println!("✅ Logged in as {}", username);
 
@@ -30,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let total = mailbox.exists as usize;
     let start = if total > limit { total - limit + 1 } else { 1 };
     let seq_range = format!("{}:{}", start, total);
-    
+
     println!("Fetching messages {} (limit: {})...", seq_range, limit);
 
     // Fetch without X-GM-THRID - just standard headers
@@ -47,17 +46,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut messages: Vec<MsgInfo> = Vec::new();
-    
+
     for fetch in fetches.iter() {
         let uid = fetch.uid.unwrap_or(0);
         let header_bytes = fetch.header().unwrap_or(&[]);
         let header_text = String::from_utf8_lossy(header_bytes);
-        
+
         // Simple header parsing
         let mut headers: HashMap<String, String> = HashMap::new();
         let mut current_key = String::new();
         let mut current_value = String::new();
-        
+
         for line in header_text.lines() {
             if line.starts_with(' ') || line.starts_with('\t') {
                 // Continuation of previous header
@@ -76,7 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !current_key.is_empty() {
             headers.insert(current_key, current_value.trim().to_string());
         }
-        
+
         let subject = headers.get("Subject").cloned().unwrap_or_default();
         let message_id = headers.get("Message-ID").or(headers.get("Message-Id")).cloned();
         let in_reply_to = headers.get("In-Reply-To").or(headers.get("In-reply-to")).cloned();
@@ -84,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .get("References")
             .map(|r| r.split_whitespace().map(String::from).collect())
             .unwrap_or_default();
-        
+
         messages.push(MsgInfo {
             uid,
             subject,
@@ -96,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build thread groups using Union-Find style approach
     // Key insight: messages in the same thread share Message-IDs in their References chain
-    
+
     // Step 1: Map each message_id to its UID
     let mut msgid_to_uid: HashMap<String, u32> = HashMap::new();
     for msg in &messages {
@@ -104,31 +103,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             msgid_to_uid.insert(mid.clone(), msg.uid);
         }
     }
-    
+
     // Step 2: Build thread groups - use the first referenced message_id as thread root
     let mut thread_groups: HashMap<String, Vec<u32>> = HashMap::new();
-    
+
     for msg in &messages {
         // Determine thread root: first message in references chain, or own message_id
-        let thread_root = msg.references.first()
+        let thread_root = msg
+            .references
+            .first()
             .or(msg.in_reply_to.as_ref())
             .or(msg.message_id.as_ref())
             .cloned()
             .unwrap_or_else(|| format!("orphan-{}", msg.uid));
-        
+
         thread_groups.entry(thread_root).or_default().push(msg.uid);
     }
 
     // Stats
-    let multi_msg_threads: Vec<_> = thread_groups.iter()
-        .filter(|(_, uids)| uids.len() > 1)
-        .collect();
-    
+    let multi_msg_threads: Vec<_> = thread_groups.iter().filter(|(_, uids)| uids.len() > 1).collect();
+
     println!("=== Thread Analysis ===");
     println!("Total messages: {}", messages.len());
     println!("Total threads: {}", thread_groups.len());
     println!("Multi-message threads: {}", multi_msg_threads.len());
-    
+
     // Show some multi-message threads
     println!("\n=== Sample Multi-Message Threads ===");
     for (thread_id, uids) in multi_msg_threads.iter().take(5) {
@@ -153,4 +152,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n✅ Done!");
     Ok(())
 }
-

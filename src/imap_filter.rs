@@ -1,20 +1,18 @@
 // src/imap_filter.rs
 
 use eyre::Result;
-use imap::Session;
+use imap::{ImapConnection, Session};
 use log::{debug, error, info};
-use native_tls::TlsStream;
-use std::net::TcpStream;
 
 use crate::cfg::config::Config;
 use crate::cfg::message_filter::{FilterAction, MessageFilter};
 use crate::cfg::state_filter::{StateAction, StateFilter, Ttl};
 use crate::message::Message;
 use crate::thread::ThreadProcessor;
-use crate::utils::{get_labels, set_label, uid_move_gmail};
+use crate::utils::{set_label, uid_move_gmail};
 
-pub fn apply_message_action(
-    client: &mut Session<TlsStream<TcpStream>>,
+pub fn apply_message_action<C: ImapConnection>(
+    client: &mut Session<C>,
     msg: &Message,
     action: &FilterAction,
 ) -> Result<()> {
@@ -39,8 +37,8 @@ pub fn apply_message_action(
     Ok(())
 }
 
-pub fn apply_state_action(
-    client: &mut Session<TlsStream<TcpStream>>,
+pub fn apply_state_action<C: ImapConnection>(
+    client: &mut Session<C>,
     msg: &Message,
     action: &StateAction,
 ) -> Result<()> {
@@ -61,14 +59,14 @@ pub fn apply_state_action(
     Ok(())
 }
 
-pub struct IMAPFilter {
-    pub client: Session<TlsStream<TcpStream>>,
+pub struct IMAPFilter<C: ImapConnection> {
+    pub client: Session<C>,
     pub message_filters: Vec<MessageFilter>,
     pub state_filters: Vec<StateFilter>,
 }
 
-impl IMAPFilter {
-    pub fn new(client: Session<TlsStream<TcpStream>>, config: Config) -> Self {
+impl<C: ImapConnection> IMAPFilter<C> {
+    pub fn new(client: Session<C>, config: Config) -> Self {
         debug!(
             "Initializing IMAPFilter with {} message_filters and {} state_filters",
             config.message_filters.len(),
@@ -99,13 +97,12 @@ impl IMAPFilter {
         let seq_set = seqs.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(",");
         debug!("FETCHing records for sequences: {}", seq_set);
 
-        // 4) Fetch UID, FLAGS, INTERNALDATE, and full header
-        // NOTE: X-GM-THRID is NOT included here because the imap crate's parser
-        // can't handle Gmail extensions in combined fetch responses.
-        // We fetch X-GM-THRID separately below using get_gmail_thread_id().
+        // 4) Fetch UID, FLAGS, INTERNALDATE, X-GM-LABELS, and full header in ONE batch request
+        // imap v3 properly supports Gmail extensions like X-GM-LABELS in combined fetch responses
+        // NOTE: X-GM-THRID causes server disconnection and is NOT supported
         let fetches = self
             .client
-            .fetch(&seq_set, "(UID FLAGS INTERNALDATE RFC822.HEADER)")?;
+            .fetch(&seq_set, "(UID FLAGS INTERNALDATE X-GM-LABELS RFC822.HEADER)")?;
         debug!("FETCH returned {} records", fetches.len());
 
         let mut out = Vec::with_capacity(fetches.len());
@@ -122,8 +119,12 @@ impl IMAPFilter {
             // convert internal date
             let date_str = fetch.internal_date().map(|dt| dt.to_rfc3339()).unwrap_or_default();
 
-            // labels (fetches X-GM-LABELS separately - this works)
-            let mut label_set = get_labels(&mut self.client, uid)?;
+            // Labels: use imap v3's gmail_labels() accessor (fetched in batch above)
+            // Then add IMAP FLAGS to the label set
+            let mut label_set: std::collections::HashSet<String> = fetch
+                .gmail_labels()
+                .map(|iter| iter.map(String::from).collect())
+                .unwrap_or_default();
             for flag in fetch.flags() {
                 label_set.insert(flag.to_string());
             }
@@ -225,20 +226,44 @@ impl IMAPFilter {
         thread_processor: &ThreadProcessor,
     ) -> Result<()> {
         info!("→ Phase 2: applying {} StateFilters", self.state_filters.len());
+        let total_messages = messages.len();
+        let mut processed_count = 0;
+        let mut kept_count = 0;
+        let mut expired_count = 0;
+        let mut no_match_count = 0;
 
         let mut i = 0;
         while i < messages.len() {
+            processed_count += 1;
+            if processed_count % 100 == 0 || processed_count == 1 {
+                info!(
+                    "  [Phase 2 progress] Processing message {}/{} (kept={}, expired={}, no_match={})",
+                    processed_count, total_messages, kept_count, expired_count, no_match_count
+                );
+            }
+
             let msg = &messages[i];
+            debug!(
+                "  Checking UID {} subject='{}' labels={:?}",
+                msg.uid,
+                &msg.subject[..msg.subject.len().min(50)],
+                msg.labels
+            );
 
             if let Some(state_filter) = self.state_filters.iter().find(|sf| sf.matches(msg)) {
+                debug!("  → Matched filter '{}'", state_filter.name);
+
                 if let Ttl::Keep = state_filter.ttl {
                     debug!(
-                        "State '{}' is Keep; protecting UID {} from further filters",
+                        "  → State '{}' is Keep; protecting UID {} from further filters",
                         state_filter.name, msg.uid
                     );
+                    kept_count += 1;
                     messages.remove(i);
                     continue;
                 }
+
+                debug!("  → Calling process_thread_state_filter for UID {}", msg.uid);
 
                 // Process entire thread for TTL
                 let processed = thread_processor.process_thread_state_filter(
@@ -248,14 +273,37 @@ impl IMAPFilter {
                     &state_filter.action,
                 )?;
 
-                // Remove all processed messages from the list
-                messages.retain(|m| !processed.iter().any(|p| p.uid == m.uid));
+                if !processed.is_empty() {
+                    expired_count += processed.len();
+                    debug!("  → Expired {} messages in thread", processed.len());
+
+                    // Remove all processed messages from the list
+                    let before_retain = messages.len();
+                    messages.retain(|m| !processed.iter().any(|p| p.uid == m.uid));
+                    let removed = before_retain - messages.len();
+                    debug!(
+                        "  → Retained: before={} after={} removed={}",
+                        before_retain,
+                        messages.len(),
+                        removed
+                    );
+                    // Don't increment i - messages were removed so current index now points to next message
+                } else {
+                    // TTL not expired yet - move to next message
+                    debug!("  → TTL not expired, moving to next message");
+                    i += 1;
+                }
             } else {
-                debug!("No state filter matched UID {}; retaining for next filter", msg.uid);
+                no_match_count += 1;
+                debug!("  → No state filter matched UID {}", msg.uid);
                 i += 1;
             }
         }
 
+        info!(
+            "  [Phase 2 complete] Total processed: {}, kept: {}, expired: {}, no_match: {}",
+            processed_count, kept_count, expired_count, no_match_count
+        );
         Ok(())
     }
 }
